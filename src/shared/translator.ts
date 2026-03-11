@@ -4,11 +4,20 @@ import {
   TextGenerationPipeline,
 } from "@huggingface/transformers";
 
-// Point ONNX WASM runtime at the locally bundled files instead of the jsdelivr CDN,
-// which is blocked by the extension's Content Security Policy.
+// Offscreen documents are not crossOriginIsolated, so SharedArrayBuffer
+// is unavailable. Limit to a single WASM thread to avoid errors.
+env.backends.onnx.wasm!.numThreads = 1;
+
+// The Cache API does not support chrome-extension:// URLs, so skip the
+// transformers.js WASM pre-load/cache step. The ONNX runtime will load
+// the files directly from the paths we set below.
+(env as any).useWasmCache = false;
+
+// Override ONNX WASM paths to use locally bundled files instead of the
+// jsdelivr CDN, which is blocked by the extension's Content Security Policy.
 env.backends.onnx.wasm!.wasmPaths = {
-  mjs: chrome.runtime.getURL("/ort-wasm-simd-threaded.jsep.mjs"),
-  wasm: chrome.runtime.getURL("/ort-wasm-simd-threaded.jsep.wasm"),
+  mjs: chrome.runtime.getURL("ort-wasm-simd-threaded.asyncify.mjs"),
+  wasm: chrome.runtime.getURL("ort-wasm-simd-threaded.asyncify.wasm"),
 };
 
 export type ProgressCallback = (progress: {

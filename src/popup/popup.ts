@@ -29,7 +29,7 @@ function populateSelect(
   select.value = defaultCode;
 }
 
-populateSelect(sourceLangSelect, SOURCE_LANGUAGES, "auto");
+populateSelect(sourceLangSelect, SOURCE_LANGUAGES, "fr_FR");
 populateSelect(targetLangSelect, TARGET_LANGUAGES, "en");
 
 function setStatus(status: string): void {
