@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="popup.css" />
+  <title>Translate</title>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Translate</h1>
+      <span id="status-indicator" class="status idle" title="Model not loaded">
+        <span class="status-dot"></span>
+        <span id="status-text">Idle</span>
+      </span>
+    </header>
+
+    <div class="language-bar">
+      <select id="source-lang" aria-label="Source language"></select>
+      <button id="swap-btn" title="Swap languages" aria-label="Swap languages">⇄</button>
+      <select id="target-lang" aria-label="Target language"></select>
+    </div>
+
+    <div class="text-areas">
+      <textarea id="source-text" placeholder="Enter text to translate..." rows="5"></textarea>
+      <textarea id="target-text" placeholder="Translation will appear here..." rows="5" readonly></textarea>
+    </div>
+
+    <div id="error-banner" class="error-banner" hidden></div>
+
+    <div class="progress-container" id="progress-container" hidden>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <span id="progress-text" class="progress-text">Loading model...</span>
+    </div>
+
+    <button id="translate-btn" class="translate-btn">Translate</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
