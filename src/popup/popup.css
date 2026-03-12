@@ -155,7 +155,7 @@ h1 {
 .language-bar {
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .language-bar select {
@@ -167,6 +167,17 @@ h1 {
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
+}
+
+.language-bar-source {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.language-bar-source select {
+  width: 100%;
 }
 
 .detected-lang {
