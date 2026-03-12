@@ -26,7 +26,8 @@ chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, _sender, sendResponse) => {
     if (
       message.action === MessageAction.TRANSLATE ||
-      message.action === MessageAction.LOAD_MODEL
+      message.action === MessageAction.LOAD_MODEL ||
+      message.action === MessageAction.DETECT_LANGUAGE
     ) {
       ensureOffscreenDocument()
         .then(() => chrome.runtime.sendMessage(message))

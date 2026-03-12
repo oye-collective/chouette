@@ -1,5 +1,7 @@
 import { MessageAction, ExtensionMessage, ModelStatus } from "../shared/messages";
 import { getTranslator, translate, isModelLoaded } from "../shared/translator";
+import { detectLanguage } from "../shared/language-detector";
+import { getLanguageName } from "../shared/languages";
 
 function broadcastStatus(status: ModelStatus): void {
   chrome.runtime.sendMessage({
@@ -82,6 +84,30 @@ chrome.runtime.onMessage.addListener(
           sendResponse({
             action: MessageAction.TRANSLATE_ERROR,
             error: err.message,
+          });
+        }
+      })();
+      return true;
+    }
+
+    if (message.action === MessageAction.DETECT_LANGUAGE) {
+      (async () => {
+        try {
+          const result = await detectLanguage(message.text);
+          const langCode = result?.extCode ?? null;
+          const langName = langCode ? (getLanguageName(langCode) ?? null) : null;
+          sendResponse({
+            action: MessageAction.DETECT_LANGUAGE_RESULT,
+            langCode,
+            langName,
+            alpha2: result?.alpha2 ?? null,
+          });
+        } catch (err: any) {
+          sendResponse({
+            action: MessageAction.DETECT_LANGUAGE_RESULT,
+            langCode: null,
+            langName: null,
+            alpha2: null,
           });
         }
       })();

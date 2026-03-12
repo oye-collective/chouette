@@ -6,6 +6,8 @@ export enum MessageAction {
   MODEL_STATUS = "MODEL_STATUS",
   LOAD_MODEL = "LOAD_MODEL",
   SELECTED_TEXT = "SELECTED_TEXT",
+  DETECT_LANGUAGE = "DETECT_LANGUAGE",
+  DETECT_LANGUAGE_RESULT = "DETECT_LANGUAGE_RESULT",
 }
 
 export type ModelStatus = "idle" | "downloading" | "loading" | "ready" | "error";
@@ -49,6 +51,18 @@ export interface SelectedTextMessage {
   text: string;
 }
 
+export interface DetectLanguageRequest {
+  action: MessageAction.DETECT_LANGUAGE;
+  text: string;
+}
+
+export interface DetectLanguageResult {
+  action: MessageAction.DETECT_LANGUAGE_RESULT;
+  langCode: string | null;
+  langName: string | null;
+  alpha2: string | null;
+}
+
 export type ExtensionMessage =
   | TranslateRequest
   | TranslateResult
@@ -56,4 +70,6 @@ export type ExtensionMessage =
   | TranslateProgress
   | ModelStatusMessage
   | LoadModelMessage
-  | SelectedTextMessage;
+  | SelectedTextMessage
+  | DetectLanguageRequest
+  | DetectLanguageResult;

@@ -1,6 +1,6 @@
 import { MessageAction, ExtensionMessage } from "../shared/messages";
 import { SOURCE_LANGUAGES, TARGET_LANGUAGES, getLanguageName } from "../shared/languages";
-import { detectLanguage } from "./language-detector";
+import { detectLanguage } from "../shared/language-detector";
 import "./popup.css";
 
 // ── Theme ──
@@ -60,6 +60,9 @@ const settingsProgressContainer = document.getElementById("settings-progress-con
 const settingsProgressFill = document.getElementById("settings-progress-fill") as HTMLElement;
 const settingsProgressText = document.getElementById("settings-progress-text") as HTMLElement;
 
+// Settings elements (preferred language)
+const preferredLangSelect = document.getElementById("preferred-lang") as HTMLSelectElement;
+
 // ── Populate Selects ──
 
 function populateSelect(
@@ -78,6 +81,18 @@ function populateSelect(
 
 populateSelect(sourceLangSelect, SOURCE_LANGUAGES, "auto");
 populateSelect(targetLangSelect, TARGET_LANGUAGES, "en");
+
+// ── Preferred Language ──
+
+(async () => {
+  populateSelect(preferredLangSelect, TARGET_LANGUAGES, "en");
+  const result = await chrome.storage.local.get("preferredLanguage");
+  preferredLangSelect.value = result.preferredLanguage || "en";
+})();
+
+preferredLangSelect.addEventListener("change", () => {
+  chrome.storage.local.set({ preferredLanguage: preferredLangSelect.value });
+});
 
 // ── Status & Progress ──
 
