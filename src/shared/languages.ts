@@ -61,5 +61,9 @@ export const LANGUAGES: Language[] = [
   { code: "zh_TW", name: "Chinese (Traditional)" },
 ];
 
-export const SOURCE_LANGUAGES = LANGUAGES.filter((l) => l.code !== "auto");
-export const TARGET_LANGUAGES = SOURCE_LANGUAGES;
+export const SOURCE_LANGUAGES = LANGUAGES;
+export const TARGET_LANGUAGES = LANGUAGES.filter((l) => l.code !== "auto");
+
+export function getLanguageName(code: string): string | undefined {
+  return LANGUAGES.find((l) => l.code === code)?.name;
+}

@@ -1,6 +1,6 @@
 import { defineConfig, Plugin } from "vite";
 import { resolve } from "path";
-import { copyFileSync, existsSync, readdirSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 
 /**
  * Copy the ONNX Runtime WASM bootstrap (.mjs) and binary (.wasm)
@@ -27,6 +27,38 @@ function copyOnnxFiles(): Plugin {
   };
 }
 
+/**
+ * Copy the fastText WASM binary and language identification model
+ * from node_modules into dist so the extension can load them locally.
+ */
+function copyFastTextFiles(): Plugin {
+  return {
+    name: "copy-fasttext-files",
+    writeBundle(options) {
+      const outDir = options.dir ?? resolve(__dirname, "dist");
+      const ftPkgDir = resolve(
+        __dirname,
+        "node_modules/fasttext.wasm.js/dist/fastText"
+      );
+      if (!existsSync(ftPkgDir)) return;
+
+      const ftOutDir = resolve(outDir, "fastText");
+      const modelsOutDir = resolve(ftOutDir, "models");
+      mkdirSync(modelsOutDir, { recursive: true });
+
+      const wasmSrc = resolve(ftPkgDir, "fastText.common.wasm");
+      if (existsSync(wasmSrc)) {
+        copyFileSync(wasmSrc, resolve(ftOutDir, "fastText.common.wasm"));
+      }
+
+      const modelSrc = resolve(ftPkgDir, "models/lid.176.ftz");
+      if (existsSync(modelSrc)) {
+        copyFileSync(modelSrc, resolve(modelsOutDir, "lid.176.ftz"));
+      }
+    },
+  };
+}
+
 export default defineConfig({
   build: {
     rollupOptions: {
@@ -46,5 +78,5 @@ export default defineConfig({
     emptyOutDir: true,
     target: "esnext",
   },
-  plugins: [copyOnnxFiles()],
+  plugins: [copyOnnxFiles(), copyFastTextFiles()],
 });
