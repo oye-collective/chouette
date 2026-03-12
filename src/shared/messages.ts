@@ -8,7 +8,7 @@ export enum MessageAction {
   SELECTED_TEXT = "SELECTED_TEXT",
 }
 
-export type ModelStatus = "idle" | "loading" | "ready" | "error";
+export type ModelStatus = "idle" | "downloading" | "loading" | "ready" | "error";
 
 export interface TranslateRequest {
   action: MessageAction.TRANSLATE;

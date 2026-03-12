@@ -28,13 +28,25 @@ async function loadModel(): Promise<void> {
     broadcastStatus("ready");
     return;
   }
-  broadcastStatus("loading");
+  let hasDownloadProgress = false;
+  let transitionedToLoading = false;
   try {
     await getTranslator((event) => {
       if (event.status === "progress") {
+        if (!hasDownloadProgress) {
+          hasDownloadProgress = true;
+          broadcastStatus("downloading");
+        }
         broadcastProgress(event);
+      } else if (event.status === "ready" && !transitionedToLoading) {
+        transitionedToLoading = true;
+        broadcastStatus("loading");
       }
     });
+    if (!hasDownloadProgress && !transitionedToLoading) {
+      // No progress or ready events fired — ensure loading is broadcast
+      broadcastStatus("loading");
+    }
     broadcastStatus("ready");
   } catch (err) {
     broadcastStatus("error");

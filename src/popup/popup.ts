@@ -110,18 +110,21 @@ function hideError(): void {
 // ── Settings Model Status ──
 
 function syncModelStatusToSettings(): void {
-  const label = currentModelStatus.charAt(0).toUpperCase() + currentModelStatus.slice(1);
-
   if (currentModelStatus === "ready") {
     modelStatusDot.style.background = "var(--success)";
     modelStatusLabel.textContent = "Ready";
     downloadModelBtn.disabled = true;
     downloadModelBtn.textContent = "Model Ready";
+  } else if (currentModelStatus === "downloading") {
+    modelStatusDot.style.background = "var(--warning)";
+    modelStatusLabel.textContent = "Downloading";
+    downloadModelBtn.disabled = true;
+    downloadModelBtn.textContent = "Downloading...";
   } else if (currentModelStatus === "loading") {
     modelStatusDot.style.background = "var(--warning)";
     modelStatusLabel.textContent = "Loading";
     downloadModelBtn.disabled = true;
-    downloadModelBtn.textContent = "Downloading...";
+    downloadModelBtn.textContent = "Loading...";
   } else if (currentModelStatus === "error") {
     modelStatusDot.style.background = "var(--error)";
     modelStatusLabel.textContent = "Error";
@@ -142,18 +145,24 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
     currentModelStatus = message.status;
     setStatus(message.status);
     syncModelStatusToSettings();
-    if (message.status === "ready") {
+    if (message.status === "ready" || message.status === "idle") {
       hideProgress();
       settingsProgressContainer.hidden = true;
+    } else if (message.status === "loading") {
+      // Post-download initialization phase — show indeterminate progress
+      showProgress(100, "Loading model...");
+      settingsProgressContainer.hidden = false;
+      settingsProgressFill.style.width = "100%";
+      settingsProgressText.textContent = "Loading model...";
     }
   }
 
   if (message.action === MessageAction.TRANSLATE_PROGRESS) {
-    currentModelStatus = "loading";
-    setStatus("loading");
+    currentModelStatus = "downloading";
+    setStatus("downloading");
     const percent = message.progress ?? 0;
     const fileInfo = message.file ? ` (${message.file.split("/").pop()})` : "";
-    const text = `Downloading model... ${Math.round(percent)}%${fileInfo}`;
+    const text = `Downloading... ${Math.round(percent)}%${fileInfo}`;
 
     // Update main view progress
     showProgress(percent, text);
@@ -294,7 +303,6 @@ themeToggle.addEventListener("click", toggleTheme);
 
 downloadModelBtn.addEventListener("click", async () => {
   downloadModelBtn.disabled = true;
-  settingsProgressContainer.hidden = false;
   await chrome.runtime.sendMessage({ action: MessageAction.LOAD_MODEL });
 });
 
