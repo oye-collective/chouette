@@ -3,6 +3,38 @@ import { SOURCE_LANGUAGES, TARGET_LANGUAGES, getLanguageName } from "../shared/l
 import { detectLanguage } from "./language-detector";
 import "./popup.css";
 
+// ── Theme ──
+
+async function loadTheme(): Promise<void> {
+  const result = await chrome.storage.local.get("theme");
+  applyTheme(result.theme || "dark");
+}
+
+function applyTheme(theme: string): void {
+  document.documentElement.setAttribute("data-theme", theme);
+  const toggle = document.getElementById("theme-toggle") as HTMLButtonElement;
+  const label = document.getElementById("theme-label") as HTMLElement;
+  if (theme === "light") {
+    toggle.classList.add("active");
+    label.textContent = "Light";
+  } else {
+    toggle.classList.remove("active");
+    label.textContent = "Dark";
+  }
+}
+
+async function toggleTheme(): Promise<void> {
+  const current = document.documentElement.getAttribute("data-theme") || "dark";
+  const next = current === "dark" ? "light" : "dark";
+  applyTheme(next);
+  await chrome.storage.local.set({ theme: next });
+}
+
+loadTheme();
+
+// ── DOM Elements ──
+
+const popupRoot = document.getElementById("popup-root") as HTMLElement;
 const sourceLangSelect = document.getElementById("source-lang") as HTMLSelectElement;
 const targetLangSelect = document.getElementById("target-lang") as HTMLSelectElement;
 const sourceText = document.getElementById("source-text") as HTMLTextAreaElement;
@@ -16,6 +48,19 @@ const progressFill = document.getElementById("progress-fill") as HTMLElement;
 const progressText = document.getElementById("progress-text") as HTMLElement;
 const errorBanner = document.getElementById("error-banner") as HTMLElement;
 const detectedLangEl = document.getElementById("detected-lang") as HTMLElement;
+
+// Settings elements
+const settingsBtn = document.getElementById("settings-btn") as HTMLButtonElement;
+const backBtn = document.getElementById("back-btn") as HTMLButtonElement;
+const themeToggle = document.getElementById("theme-toggle") as HTMLButtonElement;
+const downloadModelBtn = document.getElementById("download-model-btn") as HTMLButtonElement;
+const modelStatusDot = document.getElementById("model-status-dot") as HTMLElement;
+const modelStatusLabel = document.getElementById("model-status-label") as HTMLElement;
+const settingsProgressContainer = document.getElementById("settings-progress-container") as HTMLElement;
+const settingsProgressFill = document.getElementById("settings-progress-fill") as HTMLElement;
+const settingsProgressText = document.getElementById("settings-progress-text") as HTMLElement;
+
+// ── Populate Selects ──
 
 function populateSelect(
   select: HTMLSelectElement,
@@ -33,6 +78,10 @@ function populateSelect(
 
 populateSelect(sourceLangSelect, SOURCE_LANGUAGES, "auto");
 populateSelect(targetLangSelect, TARGET_LANGUAGES, "en");
+
+// ── Status & Progress ──
+
+let currentModelStatus = "idle";
 
 function setStatus(status: string): void {
   statusIndicator.className = `status ${status}`;
@@ -58,21 +107,66 @@ function hideError(): void {
   errorBanner.hidden = true;
 }
 
+// ── Settings Model Status ──
+
+function syncModelStatusToSettings(): void {
+  const label = currentModelStatus.charAt(0).toUpperCase() + currentModelStatus.slice(1);
+
+  if (currentModelStatus === "ready") {
+    modelStatusDot.style.background = "var(--success)";
+    modelStatusLabel.textContent = "Ready";
+    downloadModelBtn.disabled = true;
+    downloadModelBtn.textContent = "Model Ready";
+  } else if (currentModelStatus === "loading") {
+    modelStatusDot.style.background = "var(--warning)";
+    modelStatusLabel.textContent = "Loading";
+    downloadModelBtn.disabled = true;
+    downloadModelBtn.textContent = "Downloading...";
+  } else if (currentModelStatus === "error") {
+    modelStatusDot.style.background = "var(--error)";
+    modelStatusLabel.textContent = "Error";
+    downloadModelBtn.disabled = false;
+    downloadModelBtn.textContent = "Retry Download";
+  } else {
+    modelStatusDot.style.background = "var(--text-faint)";
+    modelStatusLabel.textContent = "Not loaded";
+    downloadModelBtn.disabled = false;
+    downloadModelBtn.textContent = "Download Model";
+  }
+}
+
+// ── Message Listener ──
+
 chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   if (message.action === MessageAction.MODEL_STATUS) {
+    currentModelStatus = message.status;
     setStatus(message.status);
+    syncModelStatusToSettings();
     if (message.status === "ready") {
       hideProgress();
+      settingsProgressContainer.hidden = true;
     }
   }
 
   if (message.action === MessageAction.TRANSLATE_PROGRESS) {
+    currentModelStatus = "loading";
     setStatus("loading");
     const percent = message.progress ?? 0;
     const fileInfo = message.file ? ` (${message.file.split("/").pop()})` : "";
-    showProgress(percent, `Downloading model... ${Math.round(percent)}%${fileInfo}`);
+    const text = `Downloading model... ${Math.round(percent)}%${fileInfo}`;
+
+    // Update main view progress
+    showProgress(percent, text);
+
+    // Update settings view progress
+    settingsProgressContainer.hidden = false;
+    settingsProgressFill.style.width = `${Math.round(percent)}%`;
+    settingsProgressText.textContent = text;
+    syncModelStatusToSettings();
   }
 });
+
+// ── Language Detection ──
 
 let detectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -115,6 +209,8 @@ sourceText.addEventListener("input", () => {
 sourceLangSelect.addEventListener("change", () => {
   runDetection();
 });
+
+// ── Translate ──
 
 translateBtn.addEventListener("click", async () => {
   const text = sourceText.value.trim();
@@ -163,6 +259,8 @@ translateBtn.addEventListener("click", async () => {
   }
 });
 
+// ── Swap ──
+
 swapBtn.addEventListener("click", () => {
   const srcVal = sourceLangSelect.value;
   const tgtVal = targetLangSelect.value;
@@ -176,6 +274,31 @@ swapBtn.addEventListener("click", () => {
   sourceText.value = targetText.value;
   targetText.value = srcText;
 });
+
+// ── Settings View Toggle ──
+
+settingsBtn.addEventListener("click", () => {
+  popupRoot.classList.add("show-settings");
+  syncModelStatusToSettings();
+});
+
+backBtn.addEventListener("click", () => {
+  popupRoot.classList.remove("show-settings");
+});
+
+// ── Theme Toggle ──
+
+themeToggle.addEventListener("click", toggleTheme);
+
+// ── Manual Model Download ──
+
+downloadModelBtn.addEventListener("click", async () => {
+  downloadModelBtn.disabled = true;
+  settingsProgressContainer.hidden = false;
+  await chrome.runtime.sendMessage({ action: MessageAction.LOAD_MODEL });
+});
+
+// ── Load Selected Text ──
 
 chrome.storage.session.get("selectedText", (result) => {
   if (result.selectedText) {

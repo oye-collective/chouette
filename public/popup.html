@@ -7,37 +7,96 @@
   <title>Translate</title>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>Translate</h1>
-      <span id="status-indicator" class="status idle" title="Model not loaded">
-        <span class="status-dot"></span>
-        <span id="status-text">Idle</span>
-      </span>
-    </header>
+  <div class="popup-root" id="popup-root">
+    <!-- Main View -->
+    <div class="view view--main" id="view-main">
+      <header>
+        <h1>Translate</h1>
+        <div class="header-actions">
+          <span id="status-indicator" class="status idle" title="Model not loaded">
+            <span class="status-dot"></span>
+            <span id="status-text">Idle</span>
+          </span>
+          <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+            </svg>
+          </button>
+        </div>
+      </header>
 
-    <div class="language-bar">
-      <select id="source-lang" aria-label="Source language"></select>
-      <span id="detected-lang" class="detected-lang" hidden></span>
-      <button id="swap-btn" title="Swap languages" aria-label="Swap languages">⇄</button>
-      <select id="target-lang" aria-label="Target language"></select>
-    </div>
-
-    <div class="text-areas">
-      <textarea id="source-text" placeholder="Enter text to translate..." rows="5"></textarea>
-      <textarea id="target-text" placeholder="Translation will appear here..." rows="5" readonly></textarea>
-    </div>
-
-    <div id="error-banner" class="error-banner" hidden></div>
-
-    <div class="progress-container" id="progress-container" hidden>
-      <div class="progress-bar">
-        <div class="progress-fill" id="progress-fill"></div>
+      <div class="language-bar">
+        <select id="source-lang" aria-label="Source language"></select>
+        <span id="detected-lang" class="detected-lang" hidden></span>
+        <button id="swap-btn" class="icon-btn" title="Swap languages" aria-label="Swap languages">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 16V4M7 4L3 8M7 4l4 4"/>
+            <path d="M17 8v12M17 20l4-4M17 20l-4-4"/>
+          </svg>
+        </button>
+        <select id="target-lang" aria-label="Target language"></select>
       </div>
-      <span id="progress-text" class="progress-text">Loading model...</span>
+
+      <div class="text-areas">
+        <textarea id="source-text" placeholder="Enter text..." rows="4"></textarea>
+        <textarea id="target-text" placeholder="Translation..." rows="4" readonly></textarea>
+      </div>
+
+      <div id="error-banner" class="error-banner" hidden></div>
+
+      <div class="progress-container" id="progress-container" hidden>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <span id="progress-text" class="progress-text">Loading model...</span>
+      </div>
+
+      <button id="translate-btn" class="translate-btn">Translate</button>
     </div>
 
-    <button id="translate-btn" class="translate-btn">Translate</button>
+    <!-- Settings View -->
+    <div class="view view--settings" id="view-settings">
+      <header>
+        <button id="back-btn" class="icon-btn" title="Back" aria-label="Back">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 18l-6-6 6-6"/>
+          </svg>
+        </button>
+        <h1>Settings</h1>
+        <div style="width:32px"></div>
+      </header>
+
+      <div class="settings-group">
+        <div class="setting-row">
+          <span class="setting-label">Theme</span>
+          <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme">
+            <span class="theme-toggle-track">
+              <span class="theme-toggle-thumb"></span>
+            </span>
+            <span id="theme-label">Dark</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h2 class="settings-group-title">Model</h2>
+        <div class="setting-row">
+          <span class="setting-label">Status</span>
+          <span class="setting-value">
+            <span id="model-status-dot" class="status-dot"></span>
+            <span id="model-status-label">Not loaded</span>
+          </span>
+        </div>
+        <div class="progress-container" id="settings-progress-container" hidden>
+          <div class="progress-bar">
+            <div class="progress-fill" id="settings-progress-fill"></div>
+          </div>
+          <span id="settings-progress-text" class="progress-text">Downloading...</span>
+        </div>
+        <button id="download-model-btn" class="action-btn">Download Model</button>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="popup.js"></script>
