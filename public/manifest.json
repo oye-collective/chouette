@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "chouette",
+  "name": "Chouette",
   "version": "0.1.0",
-  "description": "Local translation powered by TranslateGemma 4B with WebGPU",
+  "description": "Private, offline page translation powered by AI running entirely in your browser.",
   "permissions": ["offscreen", "storage", "activeTab", "contextMenus"],
   "background": {
     "service_worker": "service-worker.js",
