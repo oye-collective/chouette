@@ -158,6 +158,45 @@ function createTranslateIcon(): SVGSVGElement {
   return svg;
 }
 
+// ── Translation Cache ──
+
+interface CachedTranslation {
+  sourceLang: string;
+  targetLang: string;
+  // Keyed by text node index (DOM order) → { original, translated }
+  entries: Record<number, { original: string; translated: string }>;
+}
+
+function getCacheKey(): string {
+  return `translate_cache:${location.href}`;
+}
+
+async function loadCache(): Promise<CachedTranslation | null> {
+  try {
+    const key = getCacheKey();
+    const result = await chrome.storage.session.get(key);
+    return result[key] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveCache(cache: CachedTranslation): Promise<void> {
+  try {
+    await chrome.storage.session.set({ [getCacheKey()]: cache });
+  } catch {
+    // Storage quota exceeded or context invalidated — ignore
+  }
+}
+
+async function clearCache(): Promise<void> {
+  try {
+    await chrome.storage.session.remove(getCacheKey());
+  } catch {
+    // Ignore
+  }
+}
+
 // ── State ──
 
 let barDismissed = false;
@@ -167,7 +206,7 @@ let preferredLangName: string = "English";
 let shadowHost: HTMLDivElement | null = null;
 let shadowRoot: ShadowRoot | null = null;
 let showingOriginal = false;
-const textNodeMap: Map<Text, { original: string; translated: string }> = new Map();
+const textNodeMap: Map<Text, { original: string; translated: string; index: number }> = new Map();
 
 // ── Page Language Detection ──
 
@@ -180,11 +219,28 @@ async function detectPageLanguage(): Promise<void> {
   const bodyText = document.body?.innerText ?? "";
   if (bodyText.trim().length < 50) return;
 
-  const sample = bodyText.substring(0, 500);
-
   // Get preferred language from storage
   const stored = await chrome.storage.local.get("preferredLanguage");
   preferredLangCode = stored.preferredLanguage || "en";
+  preferredLangName = getLanguageNameInline(preferredLangCode);
+
+  // Check for cached translation first
+  const cached = await loadCache();
+  if (cached && cached.targetLang === preferredLangCode) {
+    const applied = applyCachedTranslation(cached);
+    if (applied) {
+      detectedLangCode = cached.sourceLang;
+      showingOriginal = false;
+      injectTranslateBar();
+      chrome.storage.local.get("theme", (result) => {
+        const isDark = (result.theme || "dark") === "dark";
+        renderBar(isDark, "done");
+      });
+      return;
+    }
+  }
+
+  const sample = bodyText.substring(0, 500);
 
   // Detect page language via offscreen document
   let response: any;
@@ -212,10 +268,32 @@ async function detectPageLanguage(): Promise<void> {
   const htmlLang = document.documentElement.lang?.toLowerCase().split("-")[0];
   if (htmlLang && htmlLang === preferredBase) return;
 
-  // Look up the preferred language name
-  preferredLangName = getLanguageNameInline(preferredLangCode);
-
   injectTranslateBar();
+}
+
+function applyCachedTranslation(cached: CachedTranslation): boolean {
+  const groups = collectTextNodes();
+  let nodeIndex = 0;
+  let appliedCount = 0;
+
+  for (const group of groups) {
+    for (const node of group.nodes) {
+      const entry = cached.entries[nodeIndex];
+      if (entry && node.textContent === entry.original) {
+        textNodeMap.set(node, {
+          original: entry.original,
+          translated: entry.translated,
+          index: nodeIndex,
+        });
+        node.textContent = entry.translated;
+        appliedCount++;
+      }
+      nodeIndex++;
+    }
+  }
+
+  // Only consider it a successful restore if we matched a meaningful portion
+  return appliedCount > 0;
 }
 
 // Inline language name lookup (content scripts can't import)
@@ -324,6 +402,7 @@ function renderBar(isDark: boolean, state: "idle" | "translating" | "done"): voi
     shadowHost?.remove();
     shadowHost = null;
     shadowRoot = null;
+    removeShimmerStyles();
   });
   bar.appendChild(closeBtn);
 
@@ -392,29 +471,85 @@ function findBlockAncestor(node: Node): Element {
   return document.body;
 }
 
+// ── Shimmer Styles ──
+
+let shimmerStyleEl: HTMLStyleElement | null = null;
+
+function injectShimmerStyles(): void {
+  if (shimmerStyleEl) return;
+  shimmerStyleEl = document.createElement("style");
+  shimmerStyleEl.textContent = `
+    .chouette-translating {
+      position: relative;
+      overflow: hidden;
+    }
+    .chouette-translating::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(111,165,134,0.08), transparent);
+      animation: chouette-shimmer 1.5s ease-in-out infinite;
+      pointer-events: none;
+      border-radius: 4px;
+    }
+    @keyframes chouette-shimmer {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+  `;
+  document.head.appendChild(shimmerStyleEl);
+}
+
+function removeShimmerStyles(): void {
+  shimmerStyleEl?.remove();
+  shimmerStyleEl = null;
+}
+
 // ── Page Translation ──
 
 async function translatePage(isDark: boolean): Promise<void> {
   renderBar(isDark, "translating");
+  injectShimmerStyles();
 
   const groups = collectTextNodes();
   const totalGroups = groups.length;
 
   if (totalGroups === 0) {
+    removeShimmerStyles();
     renderBar(isDark, "idle");
     return;
   }
 
-  // Store originals
+  // Store originals with DOM-order indices (must match applyCachedTranslation)
+  let nodeIndex = 0;
   for (const group of groups) {
     for (const node of group.nodes) {
-      textNodeMap.set(node, { original: node.textContent!, translated: "" });
+      textNodeMap.set(node, { original: node.textContent!, translated: "", index: nodeIndex });
+      nodeIndex++;
     }
   }
 
+  // Sort groups: viewport-visible first, then rest in DOM order
+  const viewportHeight = window.innerHeight;
+  const visible: BlockGroup[] = [];
+  const offscreen: BlockGroup[] = [];
+  for (const group of groups) {
+    const rect = group.ancestor.getBoundingClientRect();
+    if (rect.bottom >= 0 && rect.top <= viewportHeight) {
+      visible.push(group);
+    } else {
+      offscreen.push(group);
+    }
+  }
+  const sortedGroups = [...visible, ...offscreen];
+
   let completed = 0;
 
-  for (const group of groups) {
+  for (const group of sortedGroups) {
+    // Add shimmer to the ancestor (skip body to avoid highlighting the entire page)
+    const useShimmer = group.ancestor !== document.body;
+    if (useShimmer) group.ancestor.classList.add("chouette-translating");
+
     const texts = group.nodes.map((n) => n.textContent!);
     const joined = texts.join(DELIMITER);
 
@@ -445,10 +580,26 @@ async function translatePage(isDark: boolean): Promise<void> {
       // If translation fails for a group, skip it
     }
 
+    if (useShimmer) group.ancestor.classList.remove("chouette-translating");
+
     completed++;
     updateProgress(completed, totalGroups);
+
+    // Incremental cache save
+    const cacheEntries: Record<number, { original: string; translated: string }> = {};
+    for (const [, data] of textNodeMap) {
+      if (data.translated) {
+        cacheEntries[data.index] = { original: data.original, translated: data.translated };
+      }
+    }
+    saveCache({
+      sourceLang: detectedLangCode!,
+      targetLang: preferredLangCode,
+      entries: cacheEntries,
+    });
   }
 
+  removeShimmerStyles();
   showingOriginal = false;
   renderBar(isDark, "done");
 }
@@ -491,7 +642,7 @@ function toggleOriginal(): void {
   showingOriginal = !showingOriginal;
 
   for (const [node, texts] of textNodeMap) {
-    if (node.parentNode) {
+    if (node.parentNode && texts.translated) {
       node.textContent = showingOriginal ? texts.original : texts.translated;
     }
   }
