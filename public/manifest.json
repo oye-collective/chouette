@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Translate",
+  "name": "chouette",
   "version": "0.1.0",
   "description": "Local translation powered by TranslateGemma 4B with WebGPU",
   "permissions": ["offscreen", "storage", "activeTab", "contextMenus"],

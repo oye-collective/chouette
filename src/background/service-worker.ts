@@ -61,7 +61,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: "translate-selection",
-    title: "Translate Selection",
+    title: "chouette",
     contexts: ["selection"],
   });
 });
