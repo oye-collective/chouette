@@ -32,13 +32,29 @@ let instance: TextGenerationPipeline | null = null;
 let loading = false;
 
 export async function getTranslator(
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  proxyPort?: number | null
 ): Promise<TextGenerationPipeline> {
   if (instance) return instance;
   if (loading) throw new Error("Model is already loading");
 
   loading = true;
   try {
+    // If the native caching proxy is available, redirect HuggingFace
+    // fetches through it so the model is downloaded once and shared
+    // across all Chrome profiles.
+    if (proxyPort) {
+      try {
+        const ping = await fetch(`http://127.0.0.1:${proxyPort}/ping`);
+        if (ping.ok) {
+          env.remoteHost = `http://127.0.0.1:${proxyPort}/`;
+          (env as any).useBrowserCache = false;
+        }
+      } catch {
+        // Proxy not reachable — fall through to default HuggingFace
+      }
+    }
+
     instance = (await (pipeline as any)(
       "text-generation",
       "onnx-community/translategemma-text-4b-it-ONNX",

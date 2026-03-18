@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Chouette",
-  "version": "0.1.0",
+  "name": "Chouette: Offline AI Page Translation",
+  "version": "0.2.0",
   "description": "Private, offline page translation powered by AI running entirely in your browser.",
-  "permissions": ["offscreen", "storage", "activeTab", "contextMenus"],
+  "permissions": ["offscreen", "storage", "activeTab", "contextMenus", "nativeMessaging"],
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"

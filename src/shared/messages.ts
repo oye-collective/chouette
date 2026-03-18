@@ -8,6 +8,8 @@ export enum MessageAction {
   SELECTED_TEXT = "SELECTED_TEXT",
   DETECT_LANGUAGE = "DETECT_LANGUAGE",
   DETECT_LANGUAGE_RESULT = "DETECT_LANGUAGE_RESULT",
+  REQUEST_PROXY_PORT = "REQUEST_PROXY_PORT",
+  PROXY_PORT = "PROXY_PORT",
 }
 
 export type ModelStatus = "idle" | "downloading" | "loading" | "ready" | "error";
@@ -63,6 +65,15 @@ export interface DetectLanguageResult {
   alpha2: string | null;
 }
 
+export interface RequestProxyPortMessage {
+  action: MessageAction.REQUEST_PROXY_PORT;
+}
+
+export interface ProxyPortMessage {
+  action: MessageAction.PROXY_PORT;
+  port: number | null;
+}
+
 export type ExtensionMessage =
   | TranslateRequest
   | TranslateResult
@@ -72,4 +83,6 @@ export type ExtensionMessage =
   | LoadModelMessage
   | SelectedTextMessage
   | DetectLanguageRequest
-  | DetectLanguageResult;
+  | DetectLanguageResult
+  | RequestProxyPortMessage
+  | ProxyPortMessage;

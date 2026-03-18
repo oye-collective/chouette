@@ -25,11 +25,26 @@ function broadcastProgress(data: {
   }).catch(() => {});
 }
 
+async function getProxyPort(): Promise<number | null> {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: MessageAction.REQUEST_PROXY_PORT,
+    });
+    if (response?.action === MessageAction.PROXY_PORT) {
+      return response.port;
+    }
+  } catch {
+    // Native host not available
+  }
+  return null;
+}
+
 async function loadModel(): Promise<void> {
   if (isModelLoaded()) {
     broadcastStatus("ready");
     return;
   }
+  const proxyPort = await getProxyPort();
   let hasDownloadProgress = false;
   let transitionedToLoading = false;
   try {
@@ -44,7 +59,7 @@ async function loadModel(): Promise<void> {
         transitionedToLoading = true;
         broadcastStatus("loading");
       }
-    });
+    }, proxyPort);
     if (!hasDownloadProgress && !transitionedToLoading) {
       // No progress or ready events fired — ensure loading is broadcast
       broadcastStatus("loading");
