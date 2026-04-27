@@ -1,6 +1,7 @@
 import { MessageAction, ExtensionMessage } from "../shared/messages";
 import { SOURCE_LANGUAGES, TARGET_LANGUAGES, getLanguageName } from "../shared/languages";
 import { detectLanguage } from "../shared/language-detector";
+import { buildReportIssueUrl } from "../shared/issue-reporter";
 import "./popup.css";
 
 // ── Theme ──
@@ -376,6 +377,11 @@ targetText.addEventListener("click", async () => {
   }
   showCopyFeedback(success);
 });
+
+// ── Report an Issue ──
+
+const reportIssueLink = document.getElementById("report-issue-link") as HTMLAnchorElement;
+reportIssueLink.href = buildReportIssueUrl();
 
 // ── Load Selected Text ──
 

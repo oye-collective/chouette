@@ -1,4 +1,5 @@
 import { MessageAction, ExtensionMessage } from "../shared/messages";
+import { buildReportIssueUrl } from "../shared/issue-reporter";
 
 const NATIVE_HOST_NAME = "com.oyecollective.chouette";
 let proxyPort: number | null = null;
@@ -117,6 +118,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     }
   } else if (info.menuItemId === "translate-page" && tab?.id) {
     chrome.tabs.sendMessage(tab.id, { action: MessageAction.TRANSLATE_PAGE });
+  } else if (info.menuItemId === "report-issue") {
+    chrome.tabs.create({ url: buildReportIssueUrl() });
   }
 });
 
@@ -138,6 +141,12 @@ chrome.runtime.onInstalled.addListener(() => {
       parentId: "chouette-translate",
       title: "Translate page",
       contexts: ["page"],
+    });
+    chrome.contextMenus.create({
+      id: "report-issue",
+      parentId: "chouette-translate",
+      title: "Report an issue",
+      contexts: ["page", "selection"],
     });
   });
 });

@@ -1,0 +1,35 @@
+name: Feature Request
+description: Suggest a new feature or improvement for Chouette
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case or pain point this feature would address.
+      placeholder: When I translate long pages, I lose track of which paragraphs I've already read in the original language.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like Chouette to handle this? Rough ideas are fine.
+      placeholder: A side-by-side view that highlights the source paragraph as I scroll the translation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds, similar features in other tools, or approaches you've ruled out.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, links, or anything else that helps illustrate the request.
+    validations:
+      required: false

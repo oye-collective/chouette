@@ -462,3 +462,21 @@ textarea[readonly] {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* ── Settings Link ── */
+
+.setting-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 0.15s;
+  align-self: flex-start;
+}
+
+.setting-link:hover {
+  color: var(--accent);
+}
