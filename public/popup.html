@@ -42,7 +42,10 @@
 
       <div class="text-areas">
         <textarea id="source-text" placeholder="Enter text..." rows="4"></textarea>
-        <textarea id="target-text" placeholder="Translation..." rows="4" readonly></textarea>
+        <div class="target-wrap">
+          <textarea id="target-text" placeholder="Translation..." rows="4" readonly></textarea>
+          <span id="copied-badge" class="copied-badge" hidden>Copied</span>
+        </div>
       </div>
 
       <div id="error-banner" class="error-banner" hidden></div>

@@ -321,6 +321,62 @@ downloadModelBtn.addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ action: MessageAction.LOAD_MODEL });
 });
 
+// ── Click to Copy Translation ──
+
+const copiedBadge = document.getElementById("copied-badge") as HTMLElement;
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showCopyFeedback(success: boolean): void {
+  const stateClass = success ? "copied" : "copy-error";
+  targetText.classList.add(stateClass);
+  copiedBadge.textContent = success ? "Copied" : "Copy failed";
+  copiedBadge.classList.toggle("error", !success);
+  copiedBadge.hidden = false;
+  // Force reflow so the transition runs from the hidden state
+  void copiedBadge.offsetWidth;
+  copiedBadge.classList.add("visible");
+
+  if (copiedTimer) clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => {
+    targetText.classList.remove("copied", "copy-error");
+    copiedBadge.classList.remove("visible");
+    setTimeout(() => {
+      if (!copiedBadge.classList.contains("visible")) copiedBadge.hidden = true;
+    }, 200);
+  }, 1000);
+}
+
+function legacyCopy(value: string): boolean {
+  const previousActive = document.activeElement as HTMLElement | null;
+  const previousStart = targetText.selectionStart;
+  const previousEnd = targetText.selectionEnd;
+  try {
+    targetText.focus();
+    targetText.select();
+    const ok = document.execCommand("copy");
+    return ok;
+  } catch {
+    return false;
+  } finally {
+    targetText.setSelectionRange(previousStart ?? value.length, previousEnd ?? value.length);
+    if (previousActive && previousActive !== targetText) previousActive.focus();
+  }
+}
+
+targetText.addEventListener("click", async () => {
+  const value = targetText.value;
+  if (!value || value === "Translating...") return;
+
+  let success = false;
+  try {
+    await navigator.clipboard.writeText(value);
+    success = true;
+  } catch {
+    success = legacyCopy(value);
+  }
+  showCopyFeedback(success);
+});
+
 // ── Load Selected Text ──
 
 chrome.storage.session.get("selectedText", (result) => {
