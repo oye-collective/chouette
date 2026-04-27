@@ -335,7 +335,9 @@ function injectTranslateBar(): void {
   document.documentElement.appendChild(shadowHost);
 }
 
-function renderBar(isDark: boolean, state: "idle" | "translating" | "done"): void {
+type BarState = "idle" | "loading-model" | "translating" | "done" | "error";
+
+function renderBar(isDark: boolean, state: BarState, errorMessage?: string): void {
   if (!shadowRoot) return;
 
   // Clear previous content
@@ -368,6 +370,15 @@ function renderBar(isDark: boolean, state: "idle" | "translating" | "done"): voi
     btn.textContent = "Translate";
     btn.addEventListener("click", () => translatePage(isDark));
     bar.appendChild(btn);
+  } else if (state === "loading-model") {
+    label.textContent = "Loading model...";
+    bar.appendChild(label);
+
+    const progress = document.createElement("span");
+    progress.className = "progress-text";
+    progress.id = "chouette-progress";
+    progress.textContent = "first run may take a while";
+    bar.appendChild(progress);
   } else if (state === "translating") {
     label.textContent = "Translating...";
     bar.appendChild(label);
@@ -390,6 +401,15 @@ function renderBar(isDark: boolean, state: "idle" | "translating" | "done"): voi
       renderBar(isDark, "done");
     });
     bar.appendChild(toggleBtn);
+  } else if (state === "error") {
+    label.textContent = errorMessage || "Translation failed";
+    bar.appendChild(label);
+
+    const retryBtn = document.createElement("button");
+    retryBtn.className = "translate-btn";
+    retryBtn.textContent = "Retry";
+    retryBtn.addEventListener("click", () => translatePage(isDark));
+    bar.appendChild(retryBtn);
   }
 
   // Close button
@@ -507,9 +527,39 @@ function removeShimmerStyles(): void {
 
 // ── Page Translation ──
 
+async function ensureModelLoaded(): Promise<{ ok: true } | { ok: false; error: string }> {
+  let response: any;
+  try {
+    response = await chrome.runtime.sendMessage({ action: "LOAD_MODEL" });
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Extension unavailable" };
+  }
+
+  if (response?.action === "MODEL_STATUS" && response.status === "ready") {
+    return { ok: true };
+  }
+  if (response?.action === "TRANSLATE_ERROR") {
+    return { ok: false, error: response.error || "Failed to load model" };
+  }
+  return { ok: false, error: "Failed to load model" };
+}
+
 async function translatePage(isDark: boolean): Promise<void> {
-  renderBar(isDark, "translating");
+  renderBar(isDark, "loading-model");
   injectShimmerStyles();
+
+  // Pre-flight: ensure the translation model is loaded. Without this,
+  // a not-loaded model auto-loads on each TRANSLATE call, and any
+  // failure surfaces as a TRANSLATE_ERROR response which the loop
+  // below would otherwise silently ignore.
+  const loadResult = await ensureModelLoaded();
+  if (!loadResult.ok) {
+    removeShimmerStyles();
+    renderBar(isDark, "error", "Model not loaded — open extension to download");
+    return;
+  }
+
+  renderBar(isDark, "translating");
 
   const groups = collectTextNodes();
   const totalGroups = groups.length;
@@ -544,6 +594,8 @@ async function translatePage(isDark: boolean): Promise<void> {
   const sortedGroups = [...visible, ...offscreen];
 
   let completed = 0;
+  let translatedCount = 0;
+  let lastError: string | null = null;
 
   for (const group of sortedGroups) {
     // Add shimmer to the ancestor (skip body to avoid highlighting the entire page)
@@ -570,14 +622,22 @@ async function translatePage(isDark: boolean): Promise<void> {
             const trimmed = parts[i].trim();
             group.nodes[i].textContent = trimmed;
             textNodeMap.get(group.nodes[i])!.translated = trimmed;
+            translatedCount++;
           }
         } else {
           // Delimiter mismatch — fall back to translating individually
-          await translateNodesIndividually(group.nodes);
+          const indivCount = await translateNodesIndividually(group.nodes);
+          translatedCount += indivCount;
         }
+      } else if (response?.action === "TRANSLATE_ERROR") {
+        lastError = response.error || "Translation failed";
+        if (useShimmer) group.ancestor.classList.remove("chouette-translating");
+        break;
       }
-    } catch {
-      // If translation fails for a group, skip it
+    } catch (err: any) {
+      lastError = err?.message || "Translation failed";
+      if (useShimmer) group.ancestor.classList.remove("chouette-translating");
+      break;
     }
 
     if (useShimmer) group.ancestor.classList.remove("chouette-translating");
@@ -599,12 +659,24 @@ async function translatePage(isDark: boolean): Promise<void> {
     });
   }
 
+  // Clear any lingering shimmer from a group we broke out of mid-loop
+  for (const group of sortedGroups) {
+    group.ancestor.classList.remove("chouette-translating");
+  }
+
   removeShimmerStyles();
+
+  if (translatedCount === 0) {
+    renderBar(isDark, "error", lastError ? `Translation failed: ${lastError}` : "Translation failed");
+    return;
+  }
+
   showingOriginal = false;
   renderBar(isDark, "done");
 }
 
-async function translateNodesIndividually(nodes: Text[]): Promise<void> {
+async function translateNodesIndividually(nodes: Text[]): Promise<number> {
+  let count = 0;
   for (const node of nodes) {
     const text = node.textContent!;
     if (!text.trim()) continue;
@@ -620,11 +692,13 @@ async function translateNodesIndividually(nodes: Text[]): Promise<void> {
       if (response?.action === "TRANSLATE_RESULT" && response.translatedText) {
         node.textContent = response.translatedText;
         textNodeMap.get(node)!.translated = response.translatedText;
+        count++;
       }
     } catch {
       // Skip failed individual translations
     }
   }
+  return count;
 }
 
 function updateProgress(completed: number, total: number): void {
