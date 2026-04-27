@@ -10,6 +10,7 @@ export enum MessageAction {
   DETECT_LANGUAGE_RESULT = "DETECT_LANGUAGE_RESULT",
   REQUEST_PROXY_PORT = "REQUEST_PROXY_PORT",
   PROXY_PORT = "PROXY_PORT",
+  TRANSLATE_PAGE = "TRANSLATE_PAGE",
 }
 
 export type ModelStatus = "idle" | "downloading" | "loading" | "ready" | "error";
@@ -74,6 +75,10 @@ export interface ProxyPortMessage {
   port: number | null;
 }
 
+export interface TranslatePageMessage {
+  action: MessageAction.TRANSLATE_PAGE;
+}
+
 export type ExtensionMessage =
   | TranslateRequest
   | TranslateResult
@@ -85,4 +90,5 @@ export type ExtensionMessage =
   | DetectLanguageRequest
   | DetectLanguageResult
   | RequestProxyPortMessage
-  | ProxyPortMessage;
+  | ProxyPortMessage
+  | TranslatePageMessage;

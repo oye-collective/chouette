@@ -115,13 +115,29 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (tab?.id) {
       chrome.action.openPopup();
     }
+  } else if (info.menuItemId === "translate-page" && tab?.id) {
+    chrome.tabs.sendMessage(tab.id, { action: MessageAction.TRANSLATE_PAGE });
   }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "translate-selection",
-    title: "chouette",
-    contexts: ["selection"],
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "chouette-translate",
+      title: "Chouette - Translate",
+      contexts: ["page", "selection"],
+    });
+    chrome.contextMenus.create({
+      id: "translate-selection",
+      parentId: "chouette-translate",
+      title: "Translate selection",
+      contexts: ["selection"],
+    });
+    chrome.contextMenus.create({
+      id: "translate-page",
+      parentId: "chouette-translate",
+      title: "Translate page",
+      contexts: ["page"],
+    });
   });
 });

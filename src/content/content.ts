@@ -13,6 +13,12 @@ document.addEventListener("mouseup", () => {
   }
 });
 
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.action === "TRANSLATE_PAGE") {
+    startPageTranslationFromMenu();
+  }
+});
+
 // ── Constants ──
 
 const SKIP_TAGS = new Set([
@@ -219,10 +225,11 @@ async function detectPageLanguage(): Promise<void> {
   const bodyText = document.body?.innerText ?? "";
   if (bodyText.trim().length < 50) return;
 
-  // Get preferred language from storage
-  const stored = await chrome.storage.local.get("preferredLanguage");
+  // Get preferred language and theme from storage
+  const stored = await chrome.storage.local.get(["preferredLanguage", "theme"]);
   preferredLangCode = stored.preferredLanguage || "en";
   preferredLangName = getLanguageNameInline(preferredLangCode);
+  const isDark = (stored.theme || "dark") === "dark";
 
   // Check for cached translation first
   const cached = await loadCache();
@@ -231,11 +238,7 @@ async function detectPageLanguage(): Promise<void> {
     if (applied) {
       detectedLangCode = cached.sourceLang;
       showingOriginal = false;
-      injectTranslateBar();
-      chrome.storage.local.get("theme", (result) => {
-        const isDark = (result.theme || "dark") === "dark";
-        renderBar(isDark, "done");
-      });
+      injectTranslateBar(isDark, "done");
       return;
     }
   }
@@ -268,7 +271,42 @@ async function detectPageLanguage(): Promise<void> {
   const htmlLang = document.documentElement.lang?.toLowerCase().split("-")[0];
   if (htmlLang && htmlLang === preferredBase) return;
 
-  injectTranslateBar();
+  injectTranslateBar(isDark, "idle");
+}
+
+async function startPageTranslationFromMenu(): Promise<void> {
+  barDismissed = false;
+
+  const stored = await chrome.storage.local.get(["preferredLanguage", "theme"]);
+  preferredLangCode = stored.preferredLanguage || "en";
+  preferredLangName = getLanguageNameInline(preferredLangCode);
+  const isDark = (stored.theme || "dark") === "dark";
+
+  if (!detectedLangCode) {
+    const bodyText = document.body?.innerText ?? "";
+    const sample = bodyText.substring(0, 500);
+    if (sample.trim().length > 0) {
+      try {
+        const response: any = await chrome.runtime.sendMessage({
+          action: "DETECT_LANGUAGE",
+          text: sample,
+        });
+        if (response?.action === "DETECT_LANGUAGE_RESULT" && response.langCode) {
+          detectedLangCode = response.langCode;
+        }
+      } catch {
+        // Extension context may be invalidated
+      }
+    }
+    if (!detectedLangCode) {
+      injectTranslateBar(isDark, "error");
+      renderBar(isDark, "error", "Could not detect page language");
+      return;
+    }
+  }
+
+  injectTranslateBar(isDark, "idle");
+  await translatePage(isDark);
 }
 
 function applyCachedTranslation(cached: CachedTranslation): boolean {
@@ -320,19 +358,15 @@ function getLanguageNameInline(code: string): string {
 
 // ── Translate Bar UI ──
 
-function injectTranslateBar(): void {
+function injectTranslateBar(isDark: boolean, initialState: BarState = "idle"): void {
   if (shadowHost) return;
 
   shadowHost = document.createElement("div");
   shadowHost.id = "chouette-translate-bar";
   shadowRoot = shadowHost.attachShadow({ mode: "closed" });
-
-  chrome.storage.local.get("theme", (result) => {
-    const isDark = (result.theme || "dark") === "dark";
-    renderBar(isDark, "idle");
-  });
-
   document.documentElement.appendChild(shadowHost);
+
+  renderBar(isDark, initialState);
 }
 
 type BarState = "idle" | "loading-model" | "translating" | "done" | "error";
