@@ -637,6 +637,17 @@ async function translatePage(isDark: boolean): Promise<void> {
     return;
   }
 
+  // If a previous translation is already applied (e.g. restored from cache, or a
+  // prior translate in this session), revert nodes to their stored originals
+  // first — otherwise the capture loop below would record already-translated
+  // text as the "original".
+  if (textNodeMap.size > 0) {
+    for (const [node, data] of textNodeMap) {
+      if (node.parentNode && data.original) node.textContent = data.original;
+    }
+    textNodeMap.clear();
+  }
+
   // Store originals with DOM-order indices (must match applyCachedTranslation)
   let nodeIndex = 0;
   for (const group of groups) {

@@ -356,6 +356,7 @@ function loadEntryIntoTranslator(entry: HistoryEntry): void {
   targetLangSelect.value = entry.targetLang;
   sourceText.value = entry.sourceText;
   targetText.value = entry.translatedText;
+  saveDraft();
   runDetection();
   popupRoot.classList.remove("show-history");
 }
@@ -375,7 +376,9 @@ function renderHistoryItem(entry: HistoryEntry): HTMLElement {
   const meta = document.createElement("div");
   meta.className = "history-item-meta";
   const langs = document.createElement("span");
-  langs.textContent = `${getLanguageName(entry.sourceLang)} → ${getLanguageName(entry.targetLang)}`;
+  const srcName = getLanguageName(entry.sourceLang) ?? entry.sourceLang;
+  const tgtName = getLanguageName(entry.targetLang) ?? entry.targetLang;
+  langs.textContent = `${srcName} → ${tgtName}`;
   const time = document.createElement("span");
   time.textContent = formatRelativeTime(entry.timestamp);
   meta.append(langs, time);
@@ -399,6 +402,7 @@ function renderHistoryItem(entry: HistoryEntry): HTMLElement {
 async function renderHistory(): Promise<void> {
   const history = await getHistory();
   historyList.replaceChildren(...history.map(renderHistoryItem));
+  historyList.hidden = history.length === 0;
   historyEmpty.hidden = history.length > 0;
 }
 
@@ -534,6 +538,9 @@ chrome.storage.session.get(["selectedText", DRAFT_KEY], (result) => {
     return;
   }
   const draft = result[DRAFT_KEY] as SourceDraft | undefined;
+  // Don't clobber anything the user may have already typed before this async
+  // callback resolved.
+  if (sourceText.value) return;
   if (draft?.text && Date.now() - draft.savedAt <= DRAFT_TTL_MS) {
     sourceText.value = draft.text;
     if (draft.sourceLang) sourceLangSelect.value = draft.sourceLang;
