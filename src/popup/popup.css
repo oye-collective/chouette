@@ -55,16 +55,20 @@ body {
 
 .popup-root {
   display: flex;
-  width: 200%;
+  width: 300%;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .popup-root.show-settings {
-  transform: translateX(-50%);
+  transform: translateX(-33.333%);
+}
+
+.popup-root.show-history {
+  transform: translateX(-66.666%);
 }
 
 .view {
-  width: 50%;
+  width: 33.333%;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -479,4 +483,104 @@ textarea[readonly] {
 
 .setting-link:hover {
   color: var(--accent);
+}
+
+/* ── History ── */
+
+.text-btn {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.text-btn:hover {
+  color: var(--error);
+  background: var(--surface-alt);
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.history-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 32px 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.history-item:hover {
+  background: var(--surface-alt);
+  border-color: var(--border-hover);
+}
+
+.history-item-source {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item-target {
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.history-item-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.history-item-delete:hover {
+  color: var(--error);
+  background: var(--surface);
+}
+
+.history-empty {
+  font-size: 13px;
+  color: var(--text-faint);
+  text-align: center;
+  padding: 24px 0;
 }

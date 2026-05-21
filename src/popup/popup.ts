@@ -2,6 +2,13 @@ import { MessageAction, ExtensionMessage } from "../shared/messages";
 import { SOURCE_LANGUAGES, TARGET_LANGUAGES, getLanguageName } from "../shared/languages";
 import { detectLanguage } from "../shared/language-detector";
 import { buildReportIssueUrl } from "../shared/issue-reporter";
+import {
+  getHistory,
+  addHistoryEntry,
+  deleteHistoryEntry,
+  clearHistory,
+  HistoryEntry,
+} from "../shared/history";
 import "./popup.css";
 
 // ── Theme ──
@@ -231,6 +238,13 @@ sourceText.addEventListener("input", () => {
   detectTimer = setTimeout(runDetection, 300);
 });
 
+sourceText.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    translateBtn.click();
+  }
+});
+
 sourceLangSelect.addEventListener("change", () => {
   runDetection();
 });
@@ -278,6 +292,12 @@ translateBtn.addEventListener("click", async () => {
 
   if (response?.action === MessageAction.TRANSLATE_RESULT) {
     targetText.value = response.translatedText;
+    addHistoryEntry({
+      sourceText: text,
+      translatedText: response.translatedText,
+      sourceLang: resolvedSourceLang,
+      targetLang: targetLangSelect.value,
+    });
   } else if (response?.action === MessageAction.TRANSLATE_ERROR) {
     targetText.value = "";
     showError(response.error || "An unknown error occurred");
@@ -309,6 +329,92 @@ settingsBtn.addEventListener("click", () => {
 
 backBtn.addEventListener("click", () => {
   popupRoot.classList.remove("show-settings");
+});
+
+// ── History View ──
+
+const historyBtn = document.getElementById("history-btn") as HTMLButtonElement;
+const historyBackBtn = document.getElementById("history-back-btn") as HTMLButtonElement;
+const clearHistoryBtn = document.getElementById("clear-history-btn") as HTMLButtonElement;
+const historyList = document.getElementById("history-list") as HTMLElement;
+const historyEmpty = document.getElementById("history-empty") as HTMLElement;
+
+function formatRelativeTime(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(timestamp).toLocaleDateString();
+}
+
+function loadEntryIntoTranslator(entry: HistoryEntry): void {
+  sourceLangSelect.value = entry.sourceLang;
+  targetLangSelect.value = entry.targetLang;
+  sourceText.value = entry.sourceText;
+  targetText.value = entry.translatedText;
+  runDetection();
+  popupRoot.classList.remove("show-history");
+}
+
+function renderHistoryItem(entry: HistoryEntry): HTMLElement {
+  const item = document.createElement("div");
+  item.className = "history-item";
+
+  const source = document.createElement("div");
+  source.className = "history-item-source";
+  source.textContent = entry.sourceText;
+
+  const target = document.createElement("div");
+  target.className = "history-item-target";
+  target.textContent = entry.translatedText;
+
+  const meta = document.createElement("div");
+  meta.className = "history-item-meta";
+  const langs = document.createElement("span");
+  langs.textContent = `${getLanguageName(entry.sourceLang)} → ${getLanguageName(entry.targetLang)}`;
+  const time = document.createElement("span");
+  time.textContent = formatRelativeTime(entry.timestamp);
+  meta.append(langs, time);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "history-item-delete";
+  deleteBtn.textContent = "×";
+  deleteBtn.title = "Delete";
+  deleteBtn.setAttribute("aria-label", "Delete entry");
+  deleteBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await deleteHistoryEntry(entry.id);
+    renderHistory();
+  });
+
+  item.append(source, target, meta, deleteBtn);
+  item.addEventListener("click", () => loadEntryIntoTranslator(entry));
+  return item;
+}
+
+async function renderHistory(): Promise<void> {
+  const history = await getHistory();
+  historyList.replaceChildren(...history.map(renderHistoryItem));
+  historyEmpty.hidden = history.length > 0;
+}
+
+historyBtn.addEventListener("click", () => {
+  popupRoot.classList.remove("show-settings");
+  popupRoot.classList.add("show-history");
+  renderHistory();
+});
+
+historyBackBtn.addEventListener("click", () => {
+  popupRoot.classList.remove("show-history");
+});
+
+clearHistoryBtn.addEventListener("click", async () => {
+  await clearHistory();
+  renderHistory();
 });
 
 // ── Theme Toggle ──
@@ -383,11 +489,57 @@ targetText.addEventListener("click", async () => {
 const reportIssueLink = document.getElementById("report-issue-link") as HTMLAnchorElement;
 reportIssueLink.href = buildReportIssueUrl();
 
-// ── Load Selected Text ──
+// ── Draft Persistence ──
+// The popup DOM is destroyed when it loses focus, so persist the source text to
+// session storage with a timestamp and restore it on reopen if still within TTL.
 
-chrome.storage.session.get("selectedText", (result) => {
+const DRAFT_KEY = "sourceDraft";
+const DRAFT_TTL_MS = 60 * 1000; // 1 minute
+
+interface SourceDraft {
+  text: string;
+  sourceLang: string;
+  targetLang: string;
+  savedAt: number;
+}
+
+function saveDraft(): void {
+  const text = sourceText.value;
+  if (text) {
+    const draft: SourceDraft = {
+      text,
+      sourceLang: sourceLangSelect.value,
+      targetLang: targetLangSelect.value,
+      savedAt: Date.now(),
+    };
+    chrome.storage.session.set({ [DRAFT_KEY]: draft });
+  } else {
+    chrome.storage.session.remove(DRAFT_KEY);
+  }
+}
+
+sourceText.addEventListener("input", saveDraft);
+sourceLangSelect.addEventListener("change", saveDraft);
+targetLangSelect.addEventListener("change", saveDraft);
+swapBtn.addEventListener("click", saveDraft);
+
+// ── Restore Selected Text / Draft ──
+// A context-menu selection takes precedence; otherwise restore a recent draft.
+
+chrome.storage.session.get(["selectedText", DRAFT_KEY], (result) => {
   if (result.selectedText) {
     sourceText.value = result.selectedText as string;
     chrome.storage.session.remove("selectedText");
+    saveDraft();
+    return;
+  }
+  const draft = result[DRAFT_KEY] as SourceDraft | undefined;
+  if (draft?.text && Date.now() - draft.savedAt <= DRAFT_TTL_MS) {
+    sourceText.value = draft.text;
+    if (draft.sourceLang) sourceLangSelect.value = draft.sourceLang;
+    if (draft.targetLang) targetLangSelect.value = draft.targetLang;
+    runDetection();
+  } else if (draft) {
+    chrome.storage.session.remove(DRAFT_KEY);
   }
 });

@@ -36,6 +36,9 @@ const BLOCK_TAGS = new Set([
 
 const DELIMITER = "|||";
 
+const CACHE_KEY_PREFIX = "translate_cache:";
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
 // ── Translate Bar Styles ──
 
 function getBarStyles(isDark: boolean): string {
@@ -171,25 +174,36 @@ interface CachedTranslation {
   targetLang: string;
   // Keyed by text node index (DOM order) → { original, translated }
   entries: Record<number, { original: string; translated: string }>;
+  savedAt: number;
 }
 
 function getCacheKey(): string {
-  return `translate_cache:${location.href}`;
+  return `${CACHE_KEY_PREFIX}${location.href}`;
 }
 
+// Uses chrome.storage.local (accessible from content scripts; survives refresh
+// and browser restart), unlike chrome.storage.session which content scripts
+// cannot access by default.
 async function loadCache(): Promise<CachedTranslation | null> {
   try {
     const key = getCacheKey();
-    const result = await chrome.storage.session.get(key);
-    return result[key] ?? null;
+    const result = await chrome.storage.local.get(key);
+    const cache = result[key] as CachedTranslation | undefined;
+    if (!cache) return null;
+    if (!cache.savedAt || Date.now() - cache.savedAt > CACHE_TTL_MS) {
+      await chrome.storage.local.remove(key);
+      return null;
+    }
+    return cache;
   } catch {
     return null;
   }
 }
 
-async function saveCache(cache: CachedTranslation): Promise<void> {
+async function saveCache(cache: Omit<CachedTranslation, "savedAt">): Promise<void> {
   try {
-    await chrome.storage.session.set({ [getCacheKey()]: cache });
+    const stamped: CachedTranslation = { ...cache, savedAt: Date.now() };
+    await chrome.storage.local.set({ [getCacheKey()]: stamped });
   } catch {
     // Storage quota exceeded or context invalidated — ignore
   }
@@ -197,9 +211,28 @@ async function saveCache(cache: CachedTranslation): Promise<void> {
 
 async function clearCache(): Promise<void> {
   try {
-    await chrome.storage.session.remove(getCacheKey());
+    await chrome.storage.local.remove(getCacheKey());
   } catch {
     // Ignore
+  }
+}
+
+// Best-effort sweep of expired per-URL caches so they don't accumulate against
+// the local-storage quota.
+async function cleanupExpiredCaches(): Promise<void> {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const now = Date.now();
+    const staleKeys = Object.keys(all).filter((key) => {
+      if (!key.startsWith(CACHE_KEY_PREFIX)) return false;
+      const entry = all[key] as CachedTranslation | undefined;
+      return !entry?.savedAt || now - entry.savedAt > CACHE_TTL_MS;
+    });
+    if (staleKeys.length > 0) {
+      await chrome.storage.local.remove(staleKeys);
+    }
+  } catch {
+    // Best-effort
   }
 }
 
@@ -757,6 +790,8 @@ function toggleOriginal(): void {
 }
 
 // ── Init ──
+
+cleanupExpiredCaches();
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => detectPageLanguage());

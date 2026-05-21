@@ -17,6 +17,13 @@
             <span class="status-dot"></span>
             <span id="status-text">Idle</span>
           </span>
+          <button id="history-btn" class="icon-btn" title="History" aria-label="History">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 3v5h5"/>
+              <path d="M3.05 13A9 9 0 106 5.3L3 8"/>
+              <path d="M12 7v5l4 2"/>
+            </svg>
+          </button>
           <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/>
@@ -120,6 +127,22 @@
           </svg>
         </a>
       </div>
+    </div>
+
+    <!-- History View -->
+    <div class="view view--history" id="view-history">
+      <header>
+        <button id="history-back-btn" class="icon-btn" title="Back" aria-label="Back">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 18l-6-6 6-6"/>
+          </svg>
+        </button>
+        <h1>History</h1>
+        <button id="clear-history-btn" class="text-btn" title="Clear all">Clear all</button>
+      </header>
+
+      <div id="history-list" class="history-list"></div>
+      <div id="history-empty" class="history-empty" hidden>No translations yet.</div>
     </div>
   </div>
 
