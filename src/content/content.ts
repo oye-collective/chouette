@@ -1,5 +1,12 @@
 // Content script — must be self-contained (no ES module imports)
 // because MV3 content scripts are loaded as classic scripts.
+//
+// Runs in every frame (manifest `all_frames: true`). Only the top frame owns
+// language detection and the translate bar; sub-frames sit idle until a
+// TRANSLATE_FRAME message, relayed through the background, tells them to
+// translate.
+
+const IS_TOP_FRAME = window === window.top;
 
 // ── Selected Text ──
 
@@ -14,18 +21,27 @@ document.addEventListener("mouseup", () => {
 });
 
 chrome.runtime.onMessage.addListener((message) => {
+  // tabs.sendMessage fans out to every frame.
   if (message?.action === "TRANSLATE_PAGE") {
-    startPageTranslationFromMenu();
+    // Only the top frame drives; it brings sub-frames along itself.
+    if (IS_TOP_FRAME) startPageTranslationFromMenu();
+  } else if (message?.action === "TRANSLATE_FRAME") {
+    startFrameTranslation(message);
   }
 });
 
 // ── Constants ──
 
-const SKIP_TAGS = new Set([
-  "SCRIPT", "STYLE", "NOSCRIPT", "CODE", "PRE",
-  "TEXTAREA", "INPUT", "SVG", "IFRAME", "SELECT",
-  "OPTION", "CANVAS", "VIDEO", "AUDIO", "IMG",
+// Never looked inside — not for text, not for attributes.
+const OPAQUE_TAGS = new Set([
+  "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE",
+  "SVG", "IFRAME", "FRAME", "CANVAS", "VIDEO", "AUDIO",
 ]);
+
+// Text content is not prose (source code, or the user's own input), but the
+// attributes still are — a <textarea> placeholder needs translating even
+// though its value must not be touched.
+const NO_TEXT_TAGS = new Set(["CODE", "PRE", "TEXTAREA", "INPUT", "IMG"]);
 
 const BLOCK_TAGS = new Set([
   "P", "H1", "H2", "H3", "H4", "H5", "H6",
@@ -34,10 +50,43 @@ const BLOCK_TAGS = new Set([
   "HEADER", "FOOTER", "NAV", "MAIN", "ASIDE",
 ]);
 
+// User-visible text that lives in attributes rather than text nodes.
+const TRANSLATABLE_ATTRS = [
+  "title", "placeholder", "alt", "label",
+  "aria-label", "aria-placeholder",
+];
+
+// <input value> is display text only for these types; for everything else it
+// is the user's data.
+const BUTTON_INPUT_TYPES = new Set(["button", "submit", "reset"]);
+
 const DELIMITER = "|||";
 
 const CACHE_KEY_PREFIX = "translate_cache:";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+// Bumped whenever the unit-index space changes, since cache entries are keyed
+// by traversal order. v2 added attributes, shadow DOM and <option> text.
+const CACHE_VERSION = 2;
+const CACHE_SAVE_INTERVAL_MS = 2000;
+
+const RESCAN_DEBOUNCE_MS = 500;
+// A page that never goes quiet for the debounce window would otherwise starve
+// the rescan forever; never postpone past this deadline.
+const RESCAN_MAX_WAIT_MS = 4000;
+
+// Sweeping expired caches means deserializing every cached page, so it runs at
+// most this often rather than on every page load.
+const CACHE_SWEEP_KEY = "translate_cache_swept_at";
+const CACHE_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+
+// Both of these accumulate for the life of the page, so a long-lived feed that
+// churns thousands of rows needs a ceiling. Oldest entries are evicted first.
+const MAX_PRUNED_ENTRIES = 5000;
+const MAX_MEMO_ENTRIES = 5000;
+
+// Priority assigned to content that is not currently rendered. Such content is
+// still translated — just after everything the user can actually see.
+const OFFSCREEN_PRIORITY = Number.POSITIVE_INFINITY;
 
 // ── Translate Bar Styles ──
 
@@ -170,9 +219,10 @@ function createTranslateIcon(): SVGSVGElement {
 // ── Translation Cache ──
 
 interface CachedTranslation {
+  version: number;
   sourceLang: string;
   targetLang: string;
-  // Keyed by text node index (DOM order) → { original, translated }
+  // Keyed by translation-unit index (traversal order) → { original, translated }
   entries: Record<number, { original: string; translated: string }>;
   savedAt: number;
 }
@@ -190,6 +240,10 @@ async function loadCache(): Promise<CachedTranslation | null> {
     const result = await chrome.storage.local.get(key);
     const cache = result[key] as CachedTranslation | undefined;
     if (!cache) return null;
+    if (cache.version !== CACHE_VERSION) {
+      await chrome.storage.local.remove(key);
+      return null;
+    }
     if (!cache.savedAt || Date.now() - cache.savedAt > CACHE_TTL_MS) {
       await chrome.storage.local.remove(key);
       return null;
@@ -209,24 +263,25 @@ async function saveCache(cache: Omit<CachedTranslation, "savedAt">): Promise<voi
   }
 }
 
-async function clearCache(): Promise<void> {
-  try {
-    await chrome.storage.local.remove(getCacheKey());
-  } catch {
-    // Ignore
-  }
-}
-
-// Best-effort sweep of expired per-URL caches so they don't accumulate against
-// the local-storage quota.
+// Best-effort sweep of expired and stale-version per-URL caches so they don't
+// accumulate against the local-storage quota. get(null) deserializes every
+// cached page, so the sweep itself is rate-limited by a stored timestamp;
+// loadCache still drops its own expired entry on read either way.
 async function cleanupExpiredCaches(): Promise<void> {
   try {
-    const all = await chrome.storage.local.get(null);
     const now = Date.now();
+    const sweptAt = (await chrome.storage.local.get(CACHE_SWEEP_KEY))[CACHE_SWEEP_KEY] as
+      | number
+      | undefined;
+    if (sweptAt && now - sweptAt < CACHE_SWEEP_INTERVAL_MS) return;
+    await chrome.storage.local.set({ [CACHE_SWEEP_KEY]: now });
+
+    const all = await chrome.storage.local.get(null);
     const staleKeys = Object.keys(all).filter((key) => {
       if (!key.startsWith(CACHE_KEY_PREFIX)) return false;
       const entry = all[key] as CachedTranslation | undefined;
-      return !entry?.savedAt || now - entry.savedAt > CACHE_TTL_MS;
+      if (!entry || entry.version !== CACHE_VERSION) return true;
+      return !entry.savedAt || now - entry.savedAt > CACHE_TTL_MS;
     });
     if (staleKeys.length > 0) {
       await chrome.storage.local.remove(staleKeys);
@@ -238,6 +293,27 @@ async function cleanupExpiredCaches(): Promise<void> {
 
 // ── State ──
 
+// A single translatable string: either a text node's content, or one attribute
+// of an element. Both flow through the same pipeline.
+interface Unit {
+  el: Element;
+  node: Text | null;
+  attr: string | null;
+  original: string;
+  index: number;
+}
+
+interface Group {
+  ancestor: Element;
+  units: Unit[];
+}
+
+interface UnitState {
+  original: string;
+  translated: string;
+  index: number;
+}
+
 let barDismissed = false;
 let detectedLangCode: string | null = null;
 let preferredLangCode: string = "en";
@@ -245,7 +321,44 @@ let preferredLangName: string = "English";
 let shadowHost: HTMLDivElement | null = null;
 let shadowRoot: ShadowRoot | null = null;
 let showingOriginal = false;
-const textNodeMap: Map<Text, { original: string; translated: string; index: number }> = new Map();
+let frameTranslationStarted = false;
+
+const textStates = new Map<Text, UnitState>();
+const attrStates = new Map<Element, Map<string, UnitState>>();
+
+// Translations whose nodes have since left the document, keyed by unit index.
+// Kept out of the live maps so detached subtrees can be garbage-collected, but
+// still written to the cache so a reload can restore them. A Map rather than an
+// object so insertion order gives us a cheap oldest-first eviction.
+const prunedEntries = new Map<number, { original: string; translated: string }>();
+
+// Source text → translation, for the life of the page. Spares a model
+// round-trip when a virtualized row is re-attached, and collapses text that
+// repeats across the page (nav labels, "Read more" fifty times).
+const translationMemo = new Map<string, string>();
+
+function evictOldest(map: Map<any, any>, limit: number): void {
+  while (map.size > limit) {
+    const oldest = map.keys().next();
+    if (oldest.done) return;
+    map.delete(oldest.value);
+  }
+}
+
+let nextUnitIndex = 0;
+let queue: Group[] = [];
+let draining = false;
+let totalScheduled = 0;
+let completedGroups = 0;
+let translatedUnits = 0;
+let visibleWorkDone = false;
+
+// True when the last full priority scan found nothing rendered in the queue,
+// meaning rect reads can be skipped until layout could plausibly have changed.
+let queueAllUnrendered = false;
+// Set by user activity (scroll, resize, pointer, keys) that could change what
+// is rendered; forces the next pick to re-score.
+let layoutDirty = true;
 
 // ── Page Language Detection ──
 
@@ -272,6 +385,9 @@ async function detectPageLanguage(): Promise<void> {
       detectedLangCode = cached.sourceLang;
       showingOriginal = false;
       injectTranslateBar(isDark, "done");
+      // The page was translated before, so keep up with content it adds later.
+      startObserving(isDark);
+      broadcastToFrames();
       return;
     }
   }
@@ -343,25 +459,25 @@ async function startPageTranslationFromMenu(): Promise<void> {
 }
 
 function applyCachedTranslation(cached: CachedTranslation): boolean {
-  const groups = collectTextNodes();
-  let nodeIndex = 0;
-  let appliedCount = 0;
+  resetTranslationState();
 
-  for (const group of groups) {
-    for (const node of group.nodes) {
-      const entry = cached.entries[nodeIndex];
-      if (entry && node.textContent === entry.original) {
-        textNodeMap.set(node, {
-          original: entry.original,
-          translated: entry.translated,
-          index: nodeIndex,
-        });
-        node.textContent = entry.translated;
+  let appliedCount = 0;
+  for (const group of collectGroups()) {
+    for (const unit of group.units) {
+      const entry = cached.entries[unit.index];
+      // Index alone is not enough — the page may have changed since the cache
+      // was written, which would shift units into each other's slots.
+      if (entry && entry.original === unit.original) {
+        applyTranslation(unit, entry.translated);
         appliedCount++;
       }
-      nodeIndex++;
     }
   }
+
+  // Counts toward the session total so a later background drain (triggered by
+  // new content) doesn't mistake "nothing translated this run" for a failure.
+  translatedUnits += appliedCount;
+  visibleWorkDone = appliedCount > 0;
 
   // Only consider it a successful restore if we matched a meaningful portion
   return appliedCount > 0;
@@ -392,7 +508,7 @@ function getLanguageNameInline(code: string): string {
 // ── Translate Bar UI ──
 
 function injectTranslateBar(isDark: boolean, initialState: BarState = "idle"): void {
-  if (shadowHost) return;
+  if (shadowHost || !IS_TOP_FRAME) return;
 
   shadowHost = document.createElement("div");
   shadowHost.id = "chouette-translate-bar";
@@ -459,6 +575,15 @@ function renderBar(isDark: boolean, state: BarState, errorMessage?: string): voi
     label.textContent = `Translated to ${preferredLangName}`;
     bar.appendChild(label);
 
+    // Background work may still be draining hidden content.
+    if (draining) {
+      const progress = document.createElement("span");
+      progress.className = "progress-text";
+      progress.id = "chouette-progress";
+      progress.textContent = "finishing hidden content...";
+      bar.appendChild(progress);
+    }
+
     const toggleBtn = document.createElement("button");
     toggleBtn.className = "toggle-btn";
     toggleBtn.id = "chouette-toggle";
@@ -483,7 +608,7 @@ function renderBar(isDark: boolean, state: BarState, errorMessage?: string): voi
   const closeBtn = document.createElement("button");
   closeBtn.className = "close-btn";
   closeBtn.setAttribute("aria-label", "Dismiss");
-  closeBtn.textContent = "\u00D7";
+  closeBtn.textContent = "×";
   closeBtn.addEventListener("click", () => {
     barDismissed = true;
     shadowHost?.remove();
@@ -498,64 +623,150 @@ function renderBar(isDark: boolean, state: BarState, errorMessage?: string): voi
 
 // ── DOM Text Extraction ──
 
-interface BlockGroup {
-  ancestor: Element;
-  nodes: Text[];
+// Shadow roots found during traversal, so the mutation observer can watch them
+// too — observing document.body does not cross shadow boundaries.
+const discoveredRoots = new Set<Node>();
+
+function stateFor(unit: Unit): UnitState | undefined {
+  if (unit.node) return textStates.get(unit.node);
+  return unit.attr ? attrStates.get(unit.el)?.get(unit.attr) : undefined;
 }
 
-function collectTextNodes(): BlockGroup[] {
-  const walker = document.createTreeWalker(
-    document.body,
-    NodeFilter.SHOW_TEXT,
-    {
-      acceptNode(node: Text): number {
-        // Skip our own injected bar
-        if (shadowHost?.contains(node)) return NodeFilter.FILTER_REJECT;
+function isKnown(el: Element, node: Text | null, attr: string | null): boolean {
+  if (node) return textStates.has(node);
+  return attr !== null && (attrStates.get(el)?.has(attr) ?? false);
+}
 
-        // Skip nodes in excluded tags
-        let parent = node.parentElement;
-        while (parent) {
-          if (SKIP_TAGS.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
-          if (parent.getAttribute("contenteditable") === "false") return NodeFilter.FILTER_REJECT;
-          if (parent.getAttribute("aria-hidden") === "true") return NodeFilter.FILTER_REJECT;
-          parent = parent.parentElement;
+function registerState(unit: Unit): void {
+  const state: UnitState = { original: unit.original, translated: "", index: unit.index };
+  if (unit.node) {
+    textStates.set(unit.node, state);
+    return;
+  }
+  if (!unit.attr) return;
+  let byAttr = attrStates.get(unit.el);
+  if (!byAttr) {
+    byAttr = new Map();
+    attrStates.set(unit.el, byAttr);
+  }
+  byAttr.set(unit.attr, state);
+}
+
+// Walks the light DOM and every open shadow root, grouping translatable units
+// by their nearest block-level ancestor. Units already registered from a prior
+// pass are skipped, so a rescan after a DOM mutation yields only what is new.
+function collectGroups(): Group[] {
+  const groups: Group[] = [];
+  const byAncestor = new Map<Element, Group>();
+
+  function addUnit(ancestor: Element, el: Element, node: Text | null, attr: string | null, original: string): void {
+    let group = byAncestor.get(ancestor);
+    if (!group) {
+      group = { ancestor, units: [] };
+      byAncestor.set(ancestor, group);
+      groups.push(group);
+    }
+    const unit: Unit = { el, node, attr, original, index: nextUnitIndex++ };
+    group.units.push(unit);
+    registerState(unit);
+  }
+
+  function walk(root: Node, ancestor: Element): void {
+    for (let child = root.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const text = child as Text;
+        const value = text.textContent;
+        if (!value || !value.trim()) continue;
+        if (isKnown(root as Element, text, null)) continue;
+        addUnit(ancestor, root as Element, text, null, value);
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+      const el = child as Element;
+      const tag = el.tagName;
+      if (el === shadowHost || OPAQUE_TAGS.has(tag)) continue;
+
+      // Attribute text is prose wherever it appears, including on elements
+      // whose own text content we refuse to touch.
+      for (const attr of TRANSLATABLE_ATTRS) {
+        const value = el.getAttribute(attr);
+        if (!value || !value.trim()) continue;
+        if (isKnown(el, null, attr)) continue;
+        addUnit(ancestor, el, null, attr, value);
+      }
+      if (tag === "INPUT" && BUTTON_INPUT_TYPES.has((el as HTMLInputElement).type)) {
+        const value = el.getAttribute("value");
+        if (value && value.trim() && !isKnown(el, null, "value")) {
+          addUnit(ancestor, el, null, "value", value);
         }
+      }
 
-        // Skip whitespace-only nodes
-        if (!node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+      const nextAncestor = BLOCK_TAGS.has(tag) ? el : ancestor;
 
-        return NodeFilter.FILTER_ACCEPT;
-      },
+      // Closed shadow roots are unreachable by design; open ones are ours to
+      // walk. Our own bar uses a closed root, so it is invisible here.
+      if (el.shadowRoot) {
+        discoveredRoots.add(el.shadowRoot);
+        walk(el.shadowRoot, nextAncestor);
+      }
+
+      if (NO_TEXT_TAGS.has(tag)) continue;
+
+      // Text the user is authoring is theirs, not ours. Note contenteditable
+      // is "editable unless explicitly false" — "" and "plaintext-only" both
+      // mean editable.
+      const editable = el.getAttribute("contenteditable");
+      if (editable !== null && editable !== "false") continue;
+
+      // An <option> with no value attribute submits its own text content, so
+      // translating it would change what the form sends.
+      if (tag === "OPTION" && !el.hasAttribute("value")) continue;
+
+      walk(el, nextAncestor);
     }
-  );
-
-  // Group by nearest block-level ancestor
-  const groupMap = new Map<Element, Text[]>();
-  const groupOrder: Element[] = [];
-
-  let current: Text | null;
-  while ((current = walker.nextNode() as Text | null)) {
-    const blockAncestor = findBlockAncestor(current);
-    if (!groupMap.has(blockAncestor)) {
-      groupMap.set(blockAncestor, []);
-      groupOrder.push(blockAncestor);
-    }
-    groupMap.get(blockAncestor)!.push(current);
   }
 
-  return groupOrder.map((ancestor) => ({
-    ancestor,
-    nodes: groupMap.get(ancestor)!,
-  }));
+  if (!document.body) return [];
+  walk(document.body, document.body);
+  return groups;
 }
 
-function findBlockAncestor(node: Node): Element {
-  let current = node.parentElement;
-  while (current && current !== document.body) {
-    if (BLOCK_TAGS.has(current.tagName)) return current;
-    current = current.parentElement;
-  }
-  return document.body;
+// ── Scheduling ──
+
+// Distance from the viewport in CSS pixels: 0 means on screen, larger means
+// further away, Infinity means not rendered at all (display:none, a collapsed
+// menu, a detached node). Recomputed on every pick so the queue follows the
+// user as they scroll, and so a dropdown that opens mid-run is promoted.
+function priorityOf(group: Group): number {
+  const el = group.ancestor;
+  if (!el.isConnected) return OFFSCREEN_PRIORITY;
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return OFFSCREEN_PRIORITY;
+
+  const viewportHeight = window.innerHeight;
+  if (rect.bottom >= 0 && rect.top <= viewportHeight) return 0;
+  return rect.top > viewportHeight ? rect.top - viewportHeight : -rect.bottom;
+}
+
+// Anything that could reveal hidden content — scrolling, resizing, hover
+// menus, clicks, keyboard navigation. Handlers only set a flag, so listening
+// broadly costs nothing.
+let activityListenersInstalled = false;
+
+function installActivityListeners(): void {
+  if (activityListenersInstalled) return;
+  activityListenersInstalled = true;
+  const markDirty = () => {
+    layoutDirty = true;
+  };
+  const options = { capture: true, passive: true } as const;
+  window.addEventListener("scroll", markDirty, options);
+  window.addEventListener("resize", markDirty, options);
+  window.addEventListener("pointerdown", markDirty, options);
+  window.addEventListener("pointerover", markDirty, options);
+  window.addEventListener("keydown", markDirty, options);
 }
 
 // ── Shimmer Styles ──
@@ -592,6 +803,113 @@ function removeShimmerStyles(): void {
   shimmerStyleEl = null;
 }
 
+// ── Applying Translations ──
+
+function writeUnit(unit: Unit, value: string): void {
+  if (unit.node) {
+    if (unit.node.isConnected) unit.node.textContent = value;
+    return;
+  }
+  if (unit.attr && unit.el.isConnected) unit.el.setAttribute(unit.attr, value);
+}
+
+function applyTranslation(unit: Unit, translated: string): void {
+  // A unit can be pruned while it sits in the queue (its node detached) and
+  // then re-attached before its turn comes up. Re-register it, or the write
+  // below lands with no state behind it — Show Original would skip the node,
+  // it would never reach the cache, and the next rescan would re-collect it
+  // treating the translated text as the original, translating a translation.
+  let state = stateFor(unit);
+  if (!state) {
+    registerState(unit);
+    state = stateFor(unit);
+  }
+  if (state) state.translated = translated;
+
+  translationMemo.set(unit.original, translated);
+  evictOldest(translationMemo, MAX_MEMO_ENTRIES);
+
+  // Respect the toggle: content that arrives while the user is viewing the
+  // original should stay original.
+  writeUnit(unit, showingOriginal ? unit.original : translated);
+}
+
+function isUnitLive(unit: Unit): boolean {
+  return unit.node ? unit.node.isConnected : unit.el.isConnected;
+}
+
+function resetTranslationState(): void {
+  for (const [node, state] of textStates) {
+    if (node.isConnected && state.translated) node.textContent = state.original;
+  }
+  for (const [el, byAttr] of attrStates) {
+    for (const [attr, state] of byAttr) {
+      if (el.isConnected && state.translated) el.setAttribute(attr, state.original);
+    }
+  }
+  textStates.clear();
+  attrStates.clear();
+  prunedEntries.clear();
+  translationMemo.clear();
+  queue = [];
+  nextUnitIndex = 0;
+  totalScheduled = 0;
+  completedGroups = 0;
+  translatedUnits = 0;
+  visibleWorkDone = false;
+  queueAllUnrendered = false;
+  layoutDirty = true;
+  showingOriginal = false;
+}
+
+// Recognises a record as one of our own writes, so self-writes don't schedule
+// no-op rescans. Attribution rather than draining: takeRecords() would also
+// discard genuine page mutations that happen to be pending — a page mutating
+// in the same task as our writes, or a custom element's synchronous
+// attributeChangedCallback firing off our own setAttribute — and that content
+// would then stay untranslated until the page happened to mutate again.
+//
+// childList is never ours: we only rewrite text and attributes in place.
+function isOwnMutation(record: MutationRecord): boolean {
+  if (record.type !== "attributes" || !record.attributeName) return false;
+  const state = attrStates.get(record.target as Element)?.get(record.attributeName);
+  if (!state || !state.translated) return false;
+  const current = (record.target as Element).getAttribute(record.attributeName);
+  return current === (showingOriginal ? state.original : state.translated);
+}
+
+// The state maps hold strong references, so on a long-lived single-page app
+// the entries for removed content would pin every detached subtree forever.
+// Restore each detached node's original text before letting go of it — if the
+// page re-attaches the node (recycled list rows, cached views), a rescan then
+// re-collects it from clean source text instead of translating a translation.
+function pruneDisconnected(): void {
+  for (const [node, state] of textStates) {
+    if (node.isConnected) continue;
+    if (state.translated) {
+      prunedEntries.set(state.index, { original: state.original, translated: state.translated });
+      node.textContent = state.original;
+    }
+    textStates.delete(node);
+  }
+  for (const [el, byAttr] of attrStates) {
+    if (el.isConnected) continue;
+    for (const [attr, state] of byAttr) {
+      if (state.translated) {
+        prunedEntries.set(state.index, { original: state.original, translated: state.translated });
+        el.setAttribute(attr, state.original);
+      }
+    }
+    attrStates.delete(el);
+  }
+  // Unbounded, this would grow with every removed row on an infinite feed and
+  // be re-serialized into storage on every save until the quota rejected it.
+  evictOldest(prunedEntries, MAX_PRUNED_ENTRIES);
+  for (const root of discoveredRoots) {
+    if (!(root as ShadowRoot).host?.isConnected) discoveredRoots.delete(root);
+  }
+}
+
 // ── Page Translation ──
 
 async function ensureModelLoaded(): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -612,8 +930,9 @@ async function ensureModelLoaded(): Promise<{ ok: true } | { ok: false; error: s
 }
 
 async function translatePage(isDark: boolean): Promise<void> {
+  if (draining) return;
+
   renderBar(isDark, "loading-model");
-  injectShimmerStyles();
 
   // Pre-flight: ensure the translation model is loaded. Without this,
   // a not-loaded model auto-loads on each TRANSLATE call, and any
@@ -621,155 +940,178 @@ async function translatePage(isDark: boolean): Promise<void> {
   // below would otherwise silently ignore.
   const loadResult = await ensureModelLoaded();
   if (!loadResult.ok) {
-    removeShimmerStyles();
     renderBar(isDark, "error", "Model not loaded — open extension to download");
     return;
   }
 
   renderBar(isDark, "translating");
+  broadcastToFrames();
 
-  const groups = collectTextNodes();
-  const totalGroups = groups.length;
+  // If a previous translation is already applied (e.g. restored from cache, or
+  // a prior translate in this session), revert first — otherwise the capture
+  // below would record already-translated text as the "original".
+  resetTranslationState();
 
-  if (totalGroups === 0) {
-    removeShimmerStyles();
+  const groups = collectGroups();
+  if (groups.length === 0) {
     renderBar(isDark, "idle");
     return;
   }
 
-  // If a previous translation is already applied (e.g. restored from cache, or a
-  // prior translate in this session), revert nodes to their stored originals
-  // first — otherwise the capture loop below would record already-translated
-  // text as the "original".
-  if (textNodeMap.size > 0) {
-    for (const [node, data] of textNodeMap) {
-      if (node.parentNode && data.original) node.textContent = data.original;
-    }
-    textNodeMap.clear();
-  }
+  queue.push(...groups);
+  totalScheduled = groups.length;
 
-  // Store originals with DOM-order indices (must match applyCachedTranslation)
-  let nodeIndex = 0;
-  for (const group of groups) {
-    for (const node of group.nodes) {
-      textNodeMap.set(node, { original: node.textContent!, translated: "", index: nodeIndex });
-      nodeIndex++;
-    }
-  }
+  await processQueue(isDark);
+}
 
-  // Sort groups: viewport-visible first, then rest in DOM order
-  const viewportHeight = window.innerHeight;
-  const visible: BlockGroup[] = [];
-  const offscreen: BlockGroup[] = [];
-  for (const group of groups) {
-    const rect = group.ancestor.getBoundingClientRect();
-    if (rect.bottom >= 0 && rect.top <= viewportHeight) {
-      visible.push(group);
-    } else {
-      offscreen.push(group);
-    }
-  }
-  const sortedGroups = [...visible, ...offscreen];
+async function processQueue(isDark: boolean): Promise<void> {
+  if (draining || queue.length === 0) return;
 
-  let completed = 0;
-  let translatedCount = 0;
+  draining = true;
+  installActivityListeners();
+  injectShimmerStyles();
   let lastError: string | null = null;
 
-  for (const group of sortedGroups) {
-    // Add shimmer to the ancestor (skip body to avoid highlighting the entire page)
-    const useShimmer = group.ancestor !== document.body;
-    if (useShimmer) group.ancestor.classList.add("chouette-translating");
-
-    const texts = group.nodes.map((n) => n.textContent!);
-    const joined = texts.join(DELIMITER);
-
-    try {
-      const response: any = await chrome.runtime.sendMessage({
-        action: "TRANSLATE",
-        text: joined,
-        sourceLang: detectedLangCode!,
-        targetLang: preferredLangCode,
-      });
-
-      if (response?.action === "TRANSLATE_RESULT" && response.translatedText) {
-        const parts = response.translatedText.split(DELIMITER);
-
-        if (parts.length === group.nodes.length) {
-          // Perfect split — assign each part
-          for (let i = 0; i < group.nodes.length; i++) {
-            const trimmed = parts[i].trim();
-            group.nodes[i].textContent = trimmed;
-            textNodeMap.get(group.nodes[i])!.translated = trimmed;
-            translatedCount++;
+  try {
+    while (queue.length > 0) {
+      // Re-score every remaining group against the current scroll position.
+      // O(n) per pick is free next to a model round-trip, and ties resolve to
+      // the earliest in DOM order because the comparison is strict.
+      //
+      // Exception: once a scan has found nothing rendered left, every pick
+      // would rescan an all-hidden tail for nothing — O(n²) rect reads on
+      // pages with much hidden content. Skip the scan until user activity
+      // (or a rescan appending content) could have changed what's rendered.
+      let best = 0;
+      let bestPriority = OFFSCREEN_PRIORITY;
+      if (!queueAllUnrendered || layoutDirty) {
+        layoutDirty = false;
+        bestPriority = priorityOf(queue[0]);
+        for (let i = 1; i < queue.length && bestPriority > 0; i++) {
+          const priority = priorityOf(queue[i]);
+          if (priority < bestPriority) {
+            best = i;
+            bestPriority = priority;
           }
-        } else {
-          // Delimiter mismatch — fall back to translating individually
-          const indivCount = await translateNodesIndividually(group.nodes);
-          translatedCount += indivCount;
         }
-      } else if (response?.action === "TRANSLATE_ERROR") {
-        lastError = response.error || "Translation failed";
-        if (useShimmer) group.ancestor.classList.remove("chouette-translating");
+        queueAllUnrendered = bestPriority === OFFSCREEN_PRIORITY;
+      }
+
+      // Nothing rendered is left to do: everything the user can see is
+      // translated, so release the bar and drain the rest in the background.
+      if (bestPriority === OFFSCREEN_PRIORITY && !visibleWorkDone && translatedUnits > 0) {
+        visibleWorkDone = true;
+        renderBar(isDark, "done");
+      }
+
+      const group = queue.splice(best, 1)[0];
+      const result = await translateGroup(group);
+
+      if (!result.ok) {
+        lastError = result.error ?? "Translation failed";
+        queue = [];
         break;
       }
-    } catch (err: any) {
-      lastError = err?.message || "Translation failed";
-      if (useShimmer) group.ancestor.classList.remove("chouette-translating");
-      break;
+
+      translatedUnits += result.count;
+      completedGroups++;
+      updateProgress(completedGroups, totalScheduled);
+      scheduleCacheSave();
     }
-
-    if (useShimmer) group.ancestor.classList.remove("chouette-translating");
-
-    completed++;
-    updateProgress(completed, totalGroups);
-
-    // Incremental cache save
-    const cacheEntries: Record<number, { original: string; translated: string }> = {};
-    for (const [, data] of textNodeMap) {
-      if (data.translated) {
-        cacheEntries[data.index] = { original: data.original, translated: data.translated };
-      }
-    }
-    saveCache({
-      sourceLang: detectedLangCode!,
-      targetLang: preferredLangCode,
-      entries: cacheEntries,
-    });
+  } finally {
+    // translateGroup clears its own shimmer class in a finally, so nothing can
+    // be left highlighted here.
+    draining = false;
+    removeShimmerStyles();
   }
 
-  // Clear any lingering shimmer from a group we broke out of mid-loop
-  for (const group of sortedGroups) {
-    group.ancestor.classList.remove("chouette-translating");
-  }
+  snapshotCache();
 
-  removeShimmerStyles();
-
-  if (translatedCount === 0) {
+  if (translatedUnits === 0) {
     renderBar(isDark, "error", lastError ? `Translation failed: ${lastError}` : "Translation failed");
     return;
   }
 
-  showingOriginal = false;
+  visibleWorkDone = true;
   renderBar(isDark, "done");
+
+  // Only watch for new content once a translation has actually happened —
+  // observing earlier would churn on the page's own load-time mutations.
+  startObserving(isDark);
 }
 
-async function translateNodesIndividually(nodes: Text[]): Promise<number> {
+async function translateGroup(
+  group: Group
+): Promise<{ ok: boolean; error?: string; count: number }> {
+  const units = group.units.filter(isUnitLive);
+  if (units.length === 0) return { ok: true, count: 0 };
+
+  // Anything we have already translated on this page is free.
+  const pending: Unit[] = [];
+  let memoCount = 0;
+  for (const unit of units) {
+    const hit = translationMemo.get(unit.original);
+    if (hit === undefined) {
+      pending.push(unit);
+    } else {
+      applyTranslation(unit, hit);
+      memoCount++;
+    }
+  }
+  if (pending.length === 0) return { ok: true, count: memoCount };
+
+  // Skip the shimmer on body to avoid highlighting the entire page.
+  const useShimmer = group.ancestor !== document.body && group.ancestor.isConnected;
+  if (useShimmer) group.ancestor.classList.add("chouette-translating");
+
+  try {
+    const response: any = await chrome.runtime.sendMessage({
+      action: "TRANSLATE",
+      text: pending.map((u) => u.original).join(DELIMITER),
+      sourceLang: detectedLangCode!,
+      targetLang: preferredLangCode,
+    });
+
+    if (response?.action === "TRANSLATE_ERROR") {
+      return { ok: false, error: response.error || "Translation failed", count: memoCount };
+    }
+    if (response?.action !== "TRANSLATE_RESULT" || !response.translatedText) {
+      return { ok: true, count: memoCount };
+    }
+
+    const parts = response.translatedText.split(DELIMITER);
+    if (parts.length === pending.length) {
+      // Perfect split — assign each part
+      for (let i = 0; i < pending.length; i++) {
+        applyTranslation(pending[i], parts[i].trim());
+      }
+      return { ok: true, count: memoCount + pending.length };
+    }
+
+    // Delimiter mismatch — fall back to translating individually
+    return { ok: true, count: memoCount + (await translateUnitsIndividually(pending)) };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Translation failed", count: memoCount };
+  } finally {
+    if (useShimmer) group.ancestor.classList.remove("chouette-translating");
+  }
+}
+
+async function translateUnitsIndividually(units: Unit[]): Promise<number> {
   let count = 0;
-  for (const node of nodes) {
-    const text = node.textContent!;
-    if (!text.trim()) continue;
+  for (const unit of units) {
+    if (!unit.original.trim() || !isUnitLive(unit)) continue;
 
     try {
       const response: any = await chrome.runtime.sendMessage({
         action: "TRANSLATE",
-        text,
+        text: unit.original,
         sourceLang: detectedLangCode!,
         targetLang: preferredLangCode,
       });
 
       if (response?.action === "TRANSLATE_RESULT" && response.translatedText) {
-        node.textContent = response.translatedText;
-        textNodeMap.get(node)!.translated = response.translatedText;
+        applyTranslation(unit, response.translatedText);
         count++;
       }
     } catch {
@@ -788,24 +1130,182 @@ function updateProgress(completed: number, total: number): void {
   }
 }
 
+// ── Incremental Cache Saves ──
+
+let cacheSaveTimer: number | null = null;
+
+function snapshotCache(): void {
+  if (!detectedLangCode) return;
+  if (cacheSaveTimer !== null) {
+    clearTimeout(cacheSaveTimer);
+    cacheSaveTimer = null;
+  }
+
+  // Start from the pruned entries so translations for since-removed nodes
+  // still make it into the cache.
+  const entries: Record<number, { original: string; translated: string }> = {};
+  for (const [index, entry] of prunedEntries) entries[index] = entry;
+  for (const state of textStates.values()) {
+    if (state.translated) entries[state.index] = { original: state.original, translated: state.translated };
+  }
+  for (const byAttr of attrStates.values()) {
+    for (const state of byAttr.values()) {
+      if (state.translated) entries[state.index] = { original: state.original, translated: state.translated };
+    }
+  }
+
+  saveCache({
+    version: CACHE_VERSION,
+    sourceLang: detectedLangCode,
+    targetLang: preferredLangCode,
+    entries,
+  });
+}
+
+// Rebuilding the entry map is O(units), so writing it after every group is
+// quadratic on a large page. Coalesce instead; processQueue forces a final
+// save when it finishes.
+function scheduleCacheSave(): void {
+  if (cacheSaveTimer !== null) return;
+  cacheSaveTimer = window.setTimeout(() => {
+    cacheSaveTimer = null;
+    snapshotCache();
+  }, CACHE_SAVE_INTERVAL_MS);
+}
+
+// ── Watching for New Content ──
+
+let observer: MutationObserver | null = null;
+let rescanTimer: number | null = null;
+let rescanDeadline: number | null = null;
+
+const OBSERVER_OPTIONS: MutationObserverInit = {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  // characterData is deliberately absent: we write text via textContent on
+  // existing nodes, and observing it would feed our own writes back to us.
+  attributeFilter: [...TRANSLATABLE_ATTRS, "value"],
+};
+
+function startObserving(isDark: boolean): void {
+  if (observer || !document.body) return;
+
+  observer = new MutationObserver((records) => {
+    if (records.every(isOwnMutation)) return;
+    scheduleRescan(isDark);
+  });
+  observer.observe(document.body, OBSERVER_OPTIONS);
+  for (const root of discoveredRoots) observer.observe(root, OBSERVER_OPTIONS);
+}
+
+function scheduleRescan(isDark: boolean): void {
+  const now = Date.now();
+  // Trailing debounce with a hard deadline: each mutation pushes the rescan
+  // back, but never past the deadline set by the first postponed one.
+  if (rescanDeadline === null) rescanDeadline = now + RESCAN_MAX_WAIT_MS;
+  if (rescanTimer !== null) clearTimeout(rescanTimer);
+  const delay = Math.max(0, Math.min(RESCAN_DEBOUNCE_MS, rescanDeadline - now));
+  rescanTimer = window.setTimeout(() => {
+    rescanTimer = null;
+    rescanDeadline = null;
+    rescan(isDark);
+  }, delay);
+}
+
+function rescan(isDark: boolean): void {
+  if (!detectedLangCode) return;
+
+  pruneDisconnected();
+
+  const knownRoots = discoveredRoots.size;
+  // collectGroups skips everything already registered, so our own attribute
+  // writes come back as zero new units rather than as a re-translate loop.
+  const fresh = collectGroups();
+
+  // Watch any shadow roots that appeared along with the new content.
+  if (observer && discoveredRoots.size > knownRoots) {
+    for (const root of discoveredRoots) observer.observe(root, OBSERVER_OPTIONS);
+  }
+
+  // Newly attached iframes need driving too.
+  broadcastToFrames();
+
+  if (fresh.length === 0) return;
+
+  queue.push(...fresh);
+  totalScheduled += fresh.length;
+  // The new content may well be rendered; make the next pick look.
+  queueAllUnrendered = false;
+  processQueue(isDark);
+}
+
+// ── Sub-Frame Coordination ──
+
+// Relayed through the background, whose chrome.tabs.sendMessage fans out to
+// every frame of the tab at any nesting depth. Page scripts cannot forge
+// messages on this channel, unlike window.postMessage.
+function broadcastToFrames(): void {
+  // The relay reaches every frame of the tab at any nesting depth, so only the
+  // top frame needs to ask. Letting sub-frames re-ask would make each of N
+  // frames trigger its own tab-wide fan-out.
+  if (!IS_TOP_FRAME || !detectedLangCode) return;
+  try {
+    chrome.runtime
+      .sendMessage({
+        action: "RELAY_FRAME_TRANSLATION",
+        sourceLang: detectedLangCode,
+        targetLang: preferredLangCode,
+      })
+      .catch(() => {
+        // Extension context may be invalidated
+      });
+  } catch {
+    // Extension context may be invalidated
+  }
+}
+
+function startFrameTranslation(message: any): void {
+  if (IS_TOP_FRAME) return; // The top frame drives itself
+  if (frameTranslationStarted) return; // Ignore repeat broadcasts
+  if (typeof message.sourceLang !== "string" || typeof message.targetLang !== "string") return;
+
+  frameTranslationStarted = true;
+  detectedLangCode = message.sourceLang;
+  preferredLangCode = message.targetLang;
+
+  // Sub-frames render no bar; every renderBar call below is inert because
+  // shadowRoot is null in this frame.
+  translatePage(false);
+}
+
 // ── Show Original Toggle ──
 
 function toggleOriginal(): void {
   showingOriginal = !showingOriginal;
 
-  for (const [node, texts] of textNodeMap) {
-    if (node.parentNode && texts.translated) {
-      node.textContent = showingOriginal ? texts.original : texts.translated;
+  for (const [node, state] of textStates) {
+    if (node.isConnected && state.translated) {
+      node.textContent = showingOriginal ? state.original : state.translated;
+    }
+  }
+  for (const [el, byAttr] of attrStates) {
+    for (const [attr, state] of byAttr) {
+      if (el.isConnected && state.translated) {
+        el.setAttribute(attr, showingOriginal ? state.original : state.translated);
+      }
     }
   }
 }
 
 // ── Init ──
 
-cleanupExpiredCaches();
+if (IS_TOP_FRAME) {
+  cleanupExpiredCaches();
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => detectPageLanguage());
-} else {
-  detectPageLanguage();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => detectPageLanguage());
+  } else {
+    detectPageLanguage();
+  }
 }

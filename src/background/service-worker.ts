@@ -76,7 +76,7 @@ async function ensureOffscreenDocument(): Promise<void> {
 }
 
 chrome.runtime.onMessage.addListener(
-  (message: ExtensionMessage, _sender, sendResponse) => {
+  (message: ExtensionMessage, sender, sendResponse) => {
     if (
       message.action === MessageAction.TRANSLATE ||
       message.action === MessageAction.LOAD_MODEL ||
@@ -103,6 +103,26 @@ chrome.runtime.onMessage.addListener(
 
     if (message.action === MessageAction.SELECTED_TEXT) {
       chrome.storage.session.set({ selectedText: message.text });
+      return false;
+    }
+
+    // Relay a frame-translation broadcast back to every frame of the sender's
+    // tab. Unlike window.postMessage between frames, this channel cannot be
+    // forged by page scripts — messages only arrive here from our own
+    // content scripts.
+    if (message.action === MessageAction.RELAY_FRAME_TRANSLATION) {
+      const tabId = sender.tab?.id;
+      if (tabId !== undefined) {
+        chrome.tabs
+          .sendMessage(tabId, {
+            action: MessageAction.TRANSLATE_FRAME,
+            sourceLang: message.sourceLang,
+            targetLang: message.targetLang,
+          })
+          .catch(() => {
+            // A frame may have navigated away mid-send
+          });
+      }
       return false;
     }
 

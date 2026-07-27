@@ -11,6 +11,8 @@ export enum MessageAction {
   REQUEST_PROXY_PORT = "REQUEST_PROXY_PORT",
   PROXY_PORT = "PROXY_PORT",
   TRANSLATE_PAGE = "TRANSLATE_PAGE",
+  RELAY_FRAME_TRANSLATION = "RELAY_FRAME_TRANSLATION",
+  TRANSLATE_FRAME = "TRANSLATE_FRAME",
 }
 
 export type ModelStatus = "idle" | "downloading" | "loading" | "ready" | "error";
@@ -79,6 +81,21 @@ export interface TranslatePageMessage {
   action: MessageAction.TRANSLATE_PAGE;
 }
 
+// Content script (top frame) → background: ask for a TRANSLATE_FRAME fan-out
+// to every frame of the sender's tab.
+export interface RelayFrameTranslationMessage {
+  action: MessageAction.RELAY_FRAME_TRANSLATION;
+  sourceLang: string;
+  targetLang: string;
+}
+
+// Background → all frames of a tab: start translating with these languages.
+export interface TranslateFrameMessage {
+  action: MessageAction.TRANSLATE_FRAME;
+  sourceLang: string;
+  targetLang: string;
+}
+
 export type ExtensionMessage =
   | TranslateRequest
   | TranslateResult
@@ -91,4 +108,6 @@ export type ExtensionMessage =
   | DetectLanguageResult
   | RequestProxyPortMessage
   | ProxyPortMessage
-  | TranslatePageMessage;
+  | TranslatePageMessage
+  | RelayFrameTranslationMessage
+  | TranslateFrameMessage;
