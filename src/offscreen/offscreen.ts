@@ -1,7 +1,8 @@
 import { MessageAction, ExtensionMessage, ModelStatus } from "../shared/messages";
-import { getTranslator, translate, isModelLoaded } from "../shared/translator";
+import { getTranslator, isModelLoaded } from "../shared/translator";
 import { detectLanguage } from "../shared/language-detector";
 import { getLanguageName } from "../shared/languages";
+import { initScheduler, enqueueJob } from "./scheduler";
 
 function broadcastStatus(status: ModelStatus): void {
   chrome.runtime.sendMessage({
@@ -71,8 +72,24 @@ async function loadModel(): Promise<void> {
   }
 }
 
+initScheduler(loadModel);
+
 chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, _sender, sendResponse) => {
+    // Work requests are only accepted via the background relay. The
+    // original broadcast from the sender also lands here whenever this
+    // document is already alive; acting on both copies would run every
+    // translation twice.
+    if (
+      (message.action === MessageAction.LOAD_MODEL ||
+        message.action === MessageAction.TRANSLATE ||
+        message.action === MessageAction.TRANSLATE_BATCH ||
+        message.action === MessageAction.DETECT_LANGUAGE) &&
+      !(message as any).relayed
+    ) {
+      return false;
+    }
+
     if (message.action === MessageAction.LOAD_MODEL) {
       loadModel()
         .then(() => sendResponse({ action: MessageAction.MODEL_STATUS, status: "ready" }))
@@ -82,26 +99,47 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
 
+    // Single-text requests (popup selection translation) go through the same
+    // scheduler as page batches, at top priority so they jump ahead of any
+    // background page drain.
     if (message.action === MessageAction.TRANSLATE) {
-      (async () => {
-        try {
-          await loadModel();
-          const result = await translate(
-            message.text,
-            message.sourceLang,
-            message.targetLang
-          );
+      enqueueJob(
+        "single",
+        0,
+        message.sourceLang,
+        message.targetLang,
+        -1,
+        [message.text],
+        (translations, error) => {
+          if (error && translations[0] === null) {
+            sendResponse({ action: MessageAction.TRANSLATE_ERROR, error });
+          } else {
+            sendResponse({
+              action: MessageAction.TRANSLATE_RESULT,
+              translatedText: translations[0] ?? "",
+            });
+          }
+        }
+      );
+      return true;
+    }
+
+    if (message.action === MessageAction.TRANSLATE_BATCH) {
+      enqueueJob(
+        message.clientId,
+        message.epoch,
+        message.sourceLang,
+        message.targetLang,
+        message.priority,
+        message.texts,
+        (translations, error) => {
           sendResponse({
-            action: MessageAction.TRANSLATE_RESULT,
-            translatedText: result,
-          });
-        } catch (err: any) {
-          sendResponse({
-            action: MessageAction.TRANSLATE_ERROR,
-            error: err.message,
+            action: MessageAction.TRANSLATE_BATCH_RESULT,
+            translations,
+            ...(error ? { error } : {}),
           });
         }
-      })();
+      );
       return true;
     }
 

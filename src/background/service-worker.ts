@@ -79,11 +79,16 @@ chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, sender, sendResponse) => {
     if (
       message.action === MessageAction.TRANSLATE ||
+      message.action === MessageAction.TRANSLATE_BATCH ||
       message.action === MessageAction.LOAD_MODEL ||
       message.action === MessageAction.DETECT_LANGUAGE
     ) {
+      // The sender's runtime.sendMessage was broadcast to every extension
+      // context, so a live offscreen document heard it too. It only acts on
+      // the copy relayed here (marked `relayed`) — otherwise every request
+      // would be processed twice whenever the document already exists.
       ensureOffscreenDocument()
-        .then(() => chrome.runtime.sendMessage(message))
+        .then(() => chrome.runtime.sendMessage({ ...message, relayed: true }))
         .then(sendResponse)
         .catch((err) =>
           sendResponse({

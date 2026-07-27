@@ -1,6 +1,8 @@
 export enum MessageAction {
   TRANSLATE = "TRANSLATE",
   TRANSLATE_RESULT = "TRANSLATE_RESULT",
+  TRANSLATE_BATCH = "TRANSLATE_BATCH",
+  TRANSLATE_BATCH_RESULT = "TRANSLATE_BATCH_RESULT",
   TRANSLATE_ERROR = "TRANSLATE_ERROR",
   TRANSLATE_PROGRESS = "TRANSLATE_PROGRESS",
   MODEL_STATUS = "MODEL_STATUS",
@@ -27,6 +29,32 @@ export interface TranslateRequest {
 export interface TranslateResult {
   action: MessageAction.TRANSLATE_RESULT;
   translatedText: string;
+}
+
+// A group of translation units travelling together. `priority` is the
+// viewport distance of the group's ancestor (0 = visible; larger = further
+// away) so the offscreen scheduler can order work across frames and tabs.
+// `clientId` identifies the sending frame instance and `epoch` its current
+// translation run; a job whose epoch is superseded by a newer one from the
+// same client is dropped from the queue instead of wasting model time.
+export interface TranslateBatchRequest {
+  action: MessageAction.TRANSLATE_BATCH;
+  texts: string[];
+  sourceLang: string;
+  targetLang: string;
+  priority: number;
+  clientId: string;
+  epoch: number;
+}
+
+// `translations[i]` corresponds to `texts[i]`; null means "keep the original"
+// (refusal, empty output, or a per-item failure). `error` is set when at
+// least one item hard-failed — successfully translated siblings are still
+// returned so their work is not lost.
+export interface TranslateBatchResult {
+  action: MessageAction.TRANSLATE_BATCH_RESULT;
+  translations: (string | null)[];
+  error?: string;
 }
 
 export interface TranslateError {
@@ -99,6 +127,8 @@ export interface TranslateFrameMessage {
 export type ExtensionMessage =
   | TranslateRequest
   | TranslateResult
+  | TranslateBatchRequest
+  | TranslateBatchResult
   | TranslateError
   | TranslateProgress
   | ModelStatusMessage

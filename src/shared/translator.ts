@@ -71,12 +71,64 @@ export async function getTranslator(
   }
 }
 
-export async function translate(
-  text: string,
+export interface BatchStats {
+  elapsedMs: number;
+  inChars: number;
+  outChars: number;
+}
+
+// Thrown when the model's output does not split back into one part per input
+// text — the caller decides how to retry (typically by bisecting the batch).
+export class SplitMismatchError extends Error {
+  constructor(expected: number, got: number) {
+    super(`Joined translation split mismatch: expected ${expected} parts, got ${got}`);
+    this.name = "SplitMismatchError";
+  }
+}
+
+// Parse a numbered-list output back into its parts. Markers are only
+// honoured when strictly sequential (1, then 2, then 3 …) so a digit-dot
+// line inside a translation cannot shuffle later items; everything else
+// accumulates onto the current item. Returns null when any part is missing.
+function parseNumbered(result: string, n: number): string[] | null {
+  const parts: (string | null)[] = new Array(n).fill(null);
+  let current = -1;
+  let buf: string[] = [];
+  const flush = () => {
+    if (current >= 0 && current < n) parts[current] = buf.join("\n").trim();
+  };
+  for (const line of result.split("\n")) {
+    const m = line.match(/^\s*(\d{1,3})[.):]\s?/);
+    if (m && parseInt(m[1], 10) - 1 === current + 1) {
+      flush();
+      current += 1;
+      buf = [line.slice(m[0].length)];
+    } else {
+      buf.push(line);
+    }
+  }
+  flush();
+  return parts.every((p) => p !== null) ? (parts as string[]) : null;
+}
+
+// Translates several independent texts in ONE generation by joining them as
+// a numbered list the model reproduces in its output — in-sequence
+// batching. True multi-sequence batching (an array of chats per generate()
+// call) is broken in transformers.js 4.0.0-next.3 on WebGPU: every
+// left-padded row comes back as garbage. Until that is fixed upstream, the
+// join is the batch, amortizing the fixed per-call cost across texts.
+// Numbered lines rather than a bare delimiter: the model preserves list
+// structure reliably, whereas a delimiter between short items gets eaten.
+//
+// A null entry means "keep the original" (refusal or empty output).
+export async function translateJoined(
+  texts: string[],
   sourceLang: string,
   targetLang: string
-): Promise<string> {
+): Promise<{ translations: (string | null)[]; stats: BatchStats }> {
   const translator = await getTranslator();
+  const joined =
+    texts.length === 1 ? texts[0] : texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
 
   const messages = [
     {
@@ -86,26 +138,60 @@ export async function translate(
           type: "text",
           source_lang_code: toModelLangCode(sourceLang),
           target_lang_code: toModelLangCode(targetLang),
-          text,
+          text: joined,
         },
       ],
     },
   ];
 
+  // A runaway generation should not be able to stall the queue for minutes,
+  // so scale the cap to the input instead of using a flat 1024: ~0.6 tokens
+  // per input char is roughly double a realistic translation length, so real
+  // outputs hit EOS long before the cap.
+  const maxNewTokens = Math.min(
+    1536,
+    Math.max(96, Math.ceil(joined.length * 0.6) + 8 * texts.length)
+  );
+
+  const started = performance.now();
   const output = await (translator as any)(messages, {
-    max_new_tokens: 1024,
+    max_new_tokens: maxNewTokens,
+  });
+  const elapsedMs = performance.now() - started;
+
+  const result: string = output[0].generated_text.pop().content ?? "";
+  // A single text is sent unnumbered — the whole output is its translation.
+  const parts = texts.length === 1 ? [result] : parseNumbered(result, texts.length);
+  if (parts === null) {
+    throw new SplitMismatchError(texts.length, -1);
+  }
+
+  const translations = parts.map((part) => {
+    const trimmed = part.trim();
+    if (!trimmed) return null;
+    // TranslateGemma occasionally refuses to translate and instead replies
+    // with an English explanation (e.g. "There seems to be an error in the
+    // provided text..."). Surfacing that as the translation overwrites the
+    // page content with a refusal message. Treat refusals as null so the
+    // caller keeps the original text.
+    return looksLikeRefusal(trimmed, targetLang) ? null : trimmed;
   });
 
-  const result: string = output[0].generated_text.pop().content;
+  const stats: BatchStats = {
+    elapsedMs,
+    inChars: texts.reduce((sum, t) => sum + t.length, 0),
+    outChars: translations.reduce((sum, t) => sum + (t?.length ?? 0), 0),
+  };
+  return { translations, stats };
+}
 
-  // TranslateGemma occasionally refuses to translate and instead replies
-  // with an English explanation (e.g. "There seems to be an error in the
-  // provided text..."). Surfacing that as the translation overwrites the
-  // page content with a refusal message. Treat refusals as empty so the
-  // caller keeps the original text.
-  if (looksLikeRefusal(result, targetLang)) return "";
-
-  return result;
+export async function translate(
+  text: string,
+  sourceLang: string,
+  targetLang: string
+): Promise<string> {
+  const { translations } = await translateJoined([text], sourceLang, targetLang);
+  return translations[0] ?? "";
 }
 
 const REFUSAL_PATTERNS: RegExp[] = [

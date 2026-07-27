@@ -60,7 +60,25 @@ const TRANSLATABLE_ATTRS = [
 // is the user's data.
 const BUTTON_INPUT_TYPES = new Set(["button", "submit", "reset"]);
 
-const DELIMITER = "|||";
+// How many group requests may be in flight at once. The offscreen scheduler
+// coalesces whatever is pending into GPU batches, so the window's job is to
+// keep it fed while staying small enough that a scroll re-prioritisation
+// isn't stuck behind a wall of already-dispatched work. It also bounds how
+// much orphaned work the scheduler holds if this frame navigates away.
+const MAX_IN_FLIGHT_GROUPS = 4;
+
+// Serializable stand-in for OFFSCREEN_PRIORITY: Infinity does not survive
+// message serialization (it becomes null).
+const UNRENDERED_PRIORITY_WIRE = 1e9;
+
+// Translations apply when a request completes, so a request is also the unit
+// of progressive rendering. Large groups are split into sub-jobs of roughly
+// this size at dispatch: on a slow device each sub-job paints as it lands
+// instead of the whole group appearing minutes later in one flush, and on a
+// fast device the offscreen scheduler coalesces sub-jobs back into big
+// joins, so nothing is lost to the splitting.
+const SUBJOB_MAX_CHARS = 400;
+const SUBJOB_MAX_UNITS = 16;
 
 const CACHE_KEY_PREFIX = "translate_cache:";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -313,6 +331,17 @@ interface UnitState {
   translated: string;
   index: number;
 }
+
+// Identifies this frame instance to the offscreen scheduler; with the epoch,
+// it lets the scheduler drop queued work that a newer translation run of the
+// same frame has superseded.
+const CLIENT_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+let translateEpoch = 0;
+let inFlightGroups = 0;
+// In-flight groups that were rendered (finite priority) when dispatched —
+// the "done" bar must wait for these even when the queue holds only
+// unrendered work.
+let inFlightRendered = 0;
 
 let barDismissed = false;
 let detectedLangCode: string | null = null;
@@ -773,6 +802,10 @@ function installActivityListeners(): void {
 
 let shimmerStyleEl: HTMLStyleElement | null = null;
 
+// Concurrent sub-jobs of one group share an ancestor; the shimmer class must
+// survive until the last of them completes.
+const shimmerRefs = new Map<Element, number>();
+
 function injectShimmerStyles(): void {
   if (shimmerStyleEl) return;
   shimmerStyleEl = document.createElement("style");
@@ -860,6 +893,10 @@ function resetTranslationState(): void {
   queueAllUnrendered = false;
   layoutDirty = true;
   showingOriginal = false;
+  // Supersede any still-queued work from the previous run — in-flight
+  // responses for the old epoch are discarded on arrival, and the offscreen
+  // scheduler drops the old epoch's queued jobs.
+  translateEpoch++;
 }
 
 // Recognises a record as one of our own writes, so self-writes don't schedule
@@ -971,53 +1008,114 @@ async function processQueue(isDark: boolean): Promise<void> {
   installActivityListeners();
   injectShimmerStyles();
   let lastError: string | null = null;
+  const epoch = translateEpoch;
 
   try {
-    while (queue.length > 0) {
-      // Re-score every remaining group against the current scroll position.
-      // O(n) per pick is free next to a model round-trip, and ties resolve to
-      // the earliest in DOM order because the comparison is strict.
-      //
-      // Exception: once a scan has found nothing rendered left, every pick
-      // would rescan an all-hidden tail for nothing — O(n²) rect reads on
-      // pages with much hidden content. Skip the scan until user activity
-      // (or a rescan appending content) could have changed what's rendered.
-      let best = 0;
-      let bestPriority = OFFSCREEN_PRIORITY;
-      if (!queueAllUnrendered || layoutDirty) {
-        layoutDirty = false;
-        bestPriority = priorityOf(queue[0]);
-        for (let i = 1; i < queue.length && bestPriority > 0; i++) {
-          const priority = priorityOf(queue[i]);
-          if (priority < bestPriority) {
-            best = i;
-            bestPriority = priority;
-          }
+    // Keep up to MAX_IN_FLIGHT_GROUPS group requests outstanding. The
+    // offscreen scheduler coalesces whatever is pending into batches sized
+    // to the device, so on a capable machine several groups translate in one
+    // GPU pass while a weak one drains them effectively one at a time.
+    await new Promise<void>((resolve) => {
+      const pump = (): void => {
+        if (epoch !== translateEpoch) {
+          // Superseded by a newer run; let it own the queue.
+          queue = [];
+          if (inFlightGroups === 0) resolve();
+          return;
         }
-        queueAllUnrendered = bestPriority === OFFSCREEN_PRIORITY;
-      }
 
-      // Nothing rendered is left to do: everything the user can see is
-      // translated, so release the bar and drain the rest in the background.
-      if (bestPriority === OFFSCREEN_PRIORITY && !visibleWorkDone && translatedUnits > 0) {
-        visibleWorkDone = true;
-        renderBar(isDark, "done");
-      }
+        while (inFlightGroups < MAX_IN_FLIGHT_GROUPS && queue.length > 0) {
+          // Re-score every remaining group against the current scroll
+          // position. O(n) per pick is free next to a model round-trip, and
+          // ties resolve to the earliest in DOM order because the comparison
+          // is strict.
+          //
+          // Exception: once a scan has found nothing rendered left, every
+          // pick would rescan an all-hidden tail for nothing — O(n²) rect
+          // reads on pages with much hidden content. Skip the scan until
+          // user activity (or a rescan appending content) could have changed
+          // what's rendered.
+          let best = 0;
+          let bestPriority = OFFSCREEN_PRIORITY;
+          if (!queueAllUnrendered || layoutDirty) {
+            layoutDirty = false;
+            bestPriority = priorityOf(queue[0]);
+            for (let i = 1; i < queue.length && bestPriority > 0; i++) {
+              const priority = priorityOf(queue[i]);
+              if (priority < bestPriority) {
+                best = i;
+                bestPriority = priority;
+              }
+            }
+            queueAllUnrendered = bestPriority === OFFSCREEN_PRIORITY;
+          }
 
-      const group = queue.splice(best, 1)[0];
-      const result = await translateGroup(group);
+          // Nothing rendered is left to start and nothing rendered is still
+          // in flight: everything the user can see is translated, so release
+          // the bar and drain the rest in the background.
+          if (
+            bestPriority === OFFSCREEN_PRIORITY &&
+            inFlightRendered === 0 &&
+            !visibleWorkDone &&
+            translatedUnits > 0
+          ) {
+            visibleWorkDone = true;
+            renderBar(isDark, "done");
+          }
 
-      if (!result.ok) {
-        lastError = result.error ?? "Translation failed";
-        queue = [];
-        break;
-      }
+          let group = queue.splice(best, 1)[0];
 
-      translatedUnits += result.count;
-      completedGroups++;
-      updateProgress(completedGroups, totalScheduled);
-      scheduleCacheSave();
-    }
+          // Slice an over-large group into a dispatchable head sub-job and
+          // put the remainder back where the group was — it competes in the
+          // next pick at the same priority (same ancestor).
+          if (group.units.length > 1) {
+            let cut = 0;
+            let chars = 0;
+            while (
+              cut < group.units.length &&
+              cut < SUBJOB_MAX_UNITS &&
+              (cut === 0 || chars + group.units[cut].original.length <= SUBJOB_MAX_CHARS)
+            ) {
+              chars += group.units[cut].original.length;
+              cut++;
+            }
+            if (cut < group.units.length) {
+              const rest: Group = { ancestor: group.ancestor, units: group.units.slice(cut) };
+              group = { ancestor: group.ancestor, units: group.units.slice(0, cut) };
+              queue.splice(best, 0, rest);
+              totalScheduled++;
+            }
+          }
+
+          const rendered = bestPriority !== OFFSCREEN_PRIORITY;
+          inFlightGroups++;
+          if (rendered) inFlightRendered++;
+
+          translateGroup(group, bestPriority).then((result) => {
+            inFlightGroups--;
+            if (rendered) inFlightRendered--;
+
+            // A response for a superseded run must not touch the new run's
+            // counters; translateGroup already discards its translations.
+            if (epoch === translateEpoch) {
+              translatedUnits += result.count;
+              if (!result.ok) {
+                lastError = result.error ?? "Translation failed";
+                queue = [];
+              } else {
+                completedGroups++;
+                updateProgress(completedGroups, totalScheduled);
+                scheduleCacheSave();
+              }
+            }
+            pump();
+          });
+        }
+
+        if (inFlightGroups === 0 && queue.length === 0) resolve();
+      };
+      pump();
+    });
   } finally {
     // translateGroup clears its own shimmer class in a finally, so nothing can
     // be left highlighted here.
@@ -1041,7 +1139,8 @@ async function processQueue(isDark: boolean): Promise<void> {
 }
 
 async function translateGroup(
-  group: Group
+  group: Group,
+  priority: number
 ): Promise<{ ok: boolean; error?: string; count: number }> {
   const units = group.units.filter(isUnitLive);
   if (units.length === 0) return { ok: true, count: 0 };
@@ -1061,64 +1160,72 @@ async function translateGroup(
   if (pending.length === 0) return { ok: true, count: memoCount };
 
   // Skip the shimmer on body to avoid highlighting the entire page.
+  // Sub-jobs of the same group share an ancestor, so the class is
+  // reference-counted: it comes off when the last one finishes.
   const useShimmer = group.ancestor !== document.body && group.ancestor.isConnected;
-  if (useShimmer) group.ancestor.classList.add("chouette-translating");
+  if (useShimmer) {
+    shimmerRefs.set(group.ancestor, (shimmerRefs.get(group.ancestor) ?? 0) + 1);
+    group.ancestor.classList.add("chouette-translating");
+  }
+
+  const epochAtDispatch = translateEpoch;
 
   try {
+    // Units travel as an array with per-unit results; how they are joined
+    // into model calls is the offscreen scheduler's concern.
     const response: any = await chrome.runtime.sendMessage({
-      action: "TRANSLATE",
-      text: pending.map((u) => u.original).join(DELIMITER),
+      action: "TRANSLATE_BATCH",
+      texts: pending.map((u) => u.original),
       sourceLang: detectedLangCode!,
       targetLang: preferredLangCode,
+      priority: priority === OFFSCREEN_PRIORITY ? UNRENDERED_PRIORITY_WIRE : priority,
+      clientId: CLIENT_ID,
+      epoch: epochAtDispatch,
     });
+
+    // A newer run reset the page while we waited; its own requests will
+    // cover these nodes with fresh originals.
+    if (translateEpoch !== epochAtDispatch) return { ok: true, count: 0 };
 
     if (response?.action === "TRANSLATE_ERROR") {
       return { ok: false, error: response.error || "Translation failed", count: memoCount };
     }
-    if (response?.action !== "TRANSLATE_RESULT" || !response.translatedText) {
+    if (
+      response?.action !== "TRANSLATE_BATCH_RESULT" ||
+      !Array.isArray(response.translations)
+    ) {
       return { ok: true, count: memoCount };
     }
 
-    const parts = response.translatedText.split(DELIMITER);
-    if (parts.length === pending.length) {
-      // Perfect split — assign each part
-      for (let i = 0; i < pending.length; i++) {
-        applyTranslation(pending[i], parts[i].trim());
+    // null entries mean "keep the original" (refusal or a failed item).
+    let applied = 0;
+    const limit = Math.min(pending.length, response.translations.length);
+    for (let i = 0; i < limit; i++) {
+      const translated = response.translations[i];
+      if (typeof translated === "string" && translated.trim()) {
+        applyTranslation(pending[i], translated.trim());
+        applied++;
       }
-      return { ok: true, count: memoCount + pending.length };
     }
 
-    // Delimiter mismatch — fall back to translating individually
-    return { ok: true, count: memoCount + (await translateUnitsIndividually(pending)) };
+    if (response.error) {
+      // Partial failure: keep what succeeded, surface the error.
+      return { ok: false, error: response.error, count: memoCount + applied };
+    }
+    return { ok: true, count: memoCount + applied };
   } catch (err: any) {
     return { ok: false, error: err?.message || "Translation failed", count: memoCount };
   } finally {
-    if (useShimmer) group.ancestor.classList.remove("chouette-translating");
-  }
-}
-
-async function translateUnitsIndividually(units: Unit[]): Promise<number> {
-  let count = 0;
-  for (const unit of units) {
-    if (!unit.original.trim() || !isUnitLive(unit)) continue;
-
-    try {
-      const response: any = await chrome.runtime.sendMessage({
-        action: "TRANSLATE",
-        text: unit.original,
-        sourceLang: detectedLangCode!,
-        targetLang: preferredLangCode,
-      });
-
-      if (response?.action === "TRANSLATE_RESULT" && response.translatedText) {
-        applyTranslation(unit, response.translatedText);
-        count++;
+    if (useShimmer) {
+      const refs = (shimmerRefs.get(group.ancestor) ?? 1) - 1;
+      if (refs <= 0) {
+        shimmerRefs.delete(group.ancestor);
+        group.ancestor.classList.remove("chouette-translating");
+      } else {
+        shimmerRefs.set(group.ancestor, refs);
       }
-    } catch {
-      // Skip failed individual translations
     }
   }
-  return count;
 }
 
 function updateProgress(completed: number, total: number): void {
