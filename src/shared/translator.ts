@@ -3,6 +3,7 @@ import {
   pipeline,
   TextGenerationPipeline,
 } from "@huggingface/transformers";
+import { toModelLangCode } from "./language-mapping";
 
 // Offscreen documents are not crossOriginIsolated, so SharedArrayBuffer
 // is unavailable. Limit to a single WASM thread to avoid errors.
@@ -83,8 +84,8 @@ export async function translate(
       content: [
         {
           type: "text",
-          source_lang_code: sourceLang,
-          target_lang_code: targetLang,
+          source_lang_code: toModelLangCode(sourceLang),
+          target_lang_code: toModelLangCode(targetLang),
           text,
         },
       ],
