@@ -16,6 +16,7 @@
   --warning: #C8A375;
   --shadow: rgba(0, 0, 0, 0.3);
   --radius: 8px;
+  --popup-width: 400px;
 }
 
 :root[data-theme="light"] {
@@ -44,7 +45,7 @@
 }
 
 body {
-  width: 400px;
+  width: var(--popup-width);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -53,18 +54,33 @@ body {
 
 /* ── View System ── */
 
+/* The three views sit side by side in a 300%-wide filmstrip that slides.
+   `.popup-root` is the mask that hides the two off-screen views. The mask MUST
+   be a real element with an explicit width: `overflow` set on `body` propagates
+   to the viewport instead of clipping the body box, which leaves the full
+   1200px filmstrip in the document's scrollable overflow. The browser sizes an
+   extension popup from that overflow, so relying on body/viewport clipping made
+   the popup render all three views as one wide page.
+   `clip` rather than `hidden` so the mask never becomes a scroll container —
+   focusing a control in an off-screen view can't scroll the filmstrip out of
+   alignment. */
 .popup-root {
+  width: var(--popup-width);
+  overflow: clip;
+}
+
+.popup-track {
   position: relative;
   display: flex;
   width: 300%;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.popup-root.show-settings {
+.popup-root.show-settings .popup-track {
   transform: translateX(-33.333%);
 }
 
-.popup-root.show-history {
+.popup-root.show-history .popup-track {
   transform: translateX(-66.666%);
 }
 
