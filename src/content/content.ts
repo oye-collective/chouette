@@ -401,7 +401,10 @@ async function detectPageLanguage(): Promise<void> {
   if (bodyText.trim().length < 50) return;
 
   // Get preferred language and theme from storage
-  const stored = await chrome.storage.local.get(["preferredLanguage", "theme"]);
+  const stored = await chrome.storage.local.get<{ preferredLanguage?: string; theme?: string }>([
+    "preferredLanguage",
+    "theme",
+  ]);
   preferredLangCode = stored.preferredLanguage || "en";
   preferredLangName = getLanguageNameInline(preferredLangCode);
   const isDark = (stored.theme || "dark") === "dark";
@@ -435,12 +438,13 @@ async function detectPageLanguage(): Promise<void> {
   }
 
   if (!response || response.action !== "DETECT_LANGUAGE_RESULT") return;
-  if (!response.langCode) return;
+  const langCode: string | null = response.langCode;
+  if (!langCode) return;
 
-  detectedLangCode = response.langCode;
+  detectedLangCode = langCode;
 
   // Compare detected language to preferred
-  const detectedBase = detectedLangCode.split("_")[0].toLowerCase();
+  const detectedBase = langCode.split("_")[0].toLowerCase();
   const preferredBase = preferredLangCode.split("_")[0].toLowerCase();
 
   if (detectedBase === preferredBase) return;
@@ -455,7 +459,10 @@ async function detectPageLanguage(): Promise<void> {
 async function startPageTranslationFromMenu(): Promise<void> {
   barDismissed = false;
 
-  const stored = await chrome.storage.local.get(["preferredLanguage", "theme"]);
+  const stored = await chrome.storage.local.get<{ preferredLanguage?: string; theme?: string }>([
+    "preferredLanguage",
+    "theme",
+  ]);
   preferredLangCode = stored.preferredLanguage || "en";
   preferredLangName = getLanguageNameInline(preferredLangCode);
   const isDark = (stored.theme || "dark") === "dark";

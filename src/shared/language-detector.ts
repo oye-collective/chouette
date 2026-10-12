@@ -1,6 +1,8 @@
 import { getLIDModel } from "fasttext.wasm.js/common";
-import type { LanguageIdentificationModel } from "fasttext.wasm.js/common";
 import { alpha2ToExtCode } from "../shared/language-mapping";
+
+// The package exports the factory but not the model class it returns.
+type LanguageIdentificationModel = Awaited<ReturnType<typeof getLIDModel>>;
 
 let lidModel: LanguageIdentificationModel | null = null;
 let loading = false;
