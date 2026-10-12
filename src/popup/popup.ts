@@ -3,6 +3,12 @@ import { SOURCE_LANGUAGES, TARGET_LANGUAGES, getLanguageName } from "../shared/l
 import { detectLanguage } from "../shared/language-detector";
 import { buildReportIssueUrl } from "../shared/issue-reporter";
 import {
+  STORE_REVIEWS_URL,
+  ReviewAnswer,
+  answerReviewAsk,
+  shouldAskForReview,
+} from "../shared/review-ask";
+import {
   getHistory,
   addHistoryEntry,
   deleteHistoryEntry,
@@ -14,7 +20,7 @@ import "./popup.css";
 // ── Theme ──
 
 async function loadTheme(): Promise<void> {
-  const result = await chrome.storage.local.get("theme");
+  const result = await chrome.storage.local.get<{ theme?: string }>("theme");
   applyTheme(result.theme || "dark");
 }
 
@@ -94,7 +100,7 @@ populateSelect(targetLangSelect, TARGET_LANGUAGES, "en");
 
 (async () => {
   populateSelect(preferredLangSelect, TARGET_LANGUAGES, "en");
-  const result = await chrome.storage.local.get("preferredLanguage");
+  const result = await chrome.storage.local.get<{ preferredLanguage?: string }>("preferredLanguage");
   preferredLangSelect.value = result.preferredLanguage || "en";
 })();
 
@@ -492,6 +498,35 @@ targetText.addEventListener("click", async () => {
 
 const reportIssueLink = document.getElementById("report-issue-link") as HTMLAnchorElement;
 reportIssueLink.href = buildReportIssueUrl();
+
+// ── Rate Chouette ──
+
+const rateLink = document.getElementById("rate-link") as HTMLAnchorElement;
+rateLink.href = STORE_REVIEWS_URL;
+
+// The one-time ask, shown after real use (shared/review-ask.ts). Each answer
+// hides it at once; the stored answer decides whether it ever comes back.
+const reviewAsk = document.getElementById("review-ask") as HTMLDivElement;
+const reviewAskRate = document.getElementById("review-ask-rate") as HTMLAnchorElement;
+reviewAskRate.href = STORE_REVIEWS_URL;
+
+function answerReview(answer: ReviewAnswer): Promise<void> {
+  reviewAsk.hidden = true;
+  return answerReviewAsk(answer);
+}
+
+// Opening a tab closes the popup, which would cut the answer's write short, so
+// store the answer first and open the reviews page after.
+reviewAskRate.addEventListener("click", (event) => {
+  event.preventDefault();
+  void answerReview("rate").finally(() => chrome.tabs.create({ url: STORE_REVIEWS_URL }));
+});
+document.getElementById("review-ask-later")!.addEventListener("click", () => answerReview("later"));
+document.getElementById("review-ask-never")!.addEventListener("click", () => answerReview("never"));
+
+shouldAskForReview().then((ask) => {
+  reviewAsk.hidden = !ask;
+});
 
 // ── Draft Persistence ──
 // The popup DOM is destroyed when it loses focus, so persist the source text to

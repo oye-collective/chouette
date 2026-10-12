@@ -513,6 +513,54 @@ textarea[readonly] {
   color: var(--accent);
 }
 
+/* ── Review Ask ── */
+
+.review-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.review-ask[hidden] {
+  display: none;
+}
+
+.review-ask-text {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.review-ask-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.review-ask-rate {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-size: 12px;
+  padding: 6px 10px;
+  text-decoration: none;
+}
+
+/* The text buttons carry their own padding; pull the row back to the card's edge. */
+.review-ask-dismissals {
+  display: flex;
+  gap: 4px;
+  margin-left: -6px;
+}
+
+.review-ask-dismiss:hover {
+  color: var(--text);
+}
+
 /* ── History ── */
 
 .text-btn {

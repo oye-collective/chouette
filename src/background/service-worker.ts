@@ -1,5 +1,6 @@
 import { MessageAction, ExtensionMessage } from "../shared/messages";
 import { buildReportIssueUrl } from "../shared/issue-reporter";
+import { recordPageTranslation, recordTextTranslation } from "../shared/review-ask";
 
 const NATIVE_HOST_NAME = "com.oyecollective.chouette";
 let proxyPort: number | null = null;
@@ -55,6 +56,30 @@ function ensureNativeProxy(): Promise<number | null> {
 
 let creatingOffscreen: Promise<void> | null = null;
 
+// Successful translations feed the popup's one-time ask to rate Chouette
+// (shared/review-ask.ts). A page translation counts once, from the top frame,
+// when the first batch of its run comes back with text.
+function countTranslation(
+  message: ExtensionMessage,
+  sender: chrome.runtime.MessageSender,
+  response: any
+): void {
+  if (
+    message.action === MessageAction.TRANSLATE &&
+    response?.action === MessageAction.TRANSLATE_RESULT &&
+    response.translatedText
+  ) {
+    void recordTextTranslation();
+  } else if (
+    message.action === MessageAction.TRANSLATE_BATCH &&
+    sender.frameId === 0 &&
+    response?.action === MessageAction.TRANSLATE_BATCH_RESULT &&
+    response.translations.some((t: string | null) => t)
+  ) {
+    void recordPageTranslation(`${message.clientId}:${message.epoch}`);
+  }
+}
+
 async function ensureOffscreenDocument(): Promise<void> {
   const existingContexts = await chrome.runtime.getContexts({
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
@@ -89,7 +114,10 @@ chrome.runtime.onMessage.addListener(
       // would be processed twice whenever the document already exists.
       ensureOffscreenDocument()
         .then(() => chrome.runtime.sendMessage({ ...message, relayed: true }))
-        .then(sendResponse)
+        .then((response) => {
+          countTranslation(message, sender, response);
+          sendResponse(response);
+        })
         .catch((err) =>
           sendResponse({
             action: MessageAction.TRANSLATE_ERROR,

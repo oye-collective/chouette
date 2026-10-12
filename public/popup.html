@@ -66,6 +66,17 @@
         </div>
 
         <button id="translate-btn" class="translate-btn">Translate</button>
+
+        <div id="review-ask" class="review-ask" hidden>
+          <p class="review-ask-text">If you have a moment, a rating on the Chrome Web Store helps other readers find Chouette.</p>
+          <div class="review-ask-actions">
+            <a id="review-ask-rate" class="action-btn review-ask-rate" href="#" target="_blank" rel="noopener noreferrer">Rate on the Chrome Web Store</a>
+            <div class="review-ask-dismissals">
+              <button id="review-ask-later" class="text-btn review-ask-dismiss">Not now</button>
+              <button id="review-ask-never" class="text-btn review-ask-dismiss">Don't ask again</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Settings View -->
@@ -122,6 +133,13 @@
           <h2 class="settings-group-title">Help</h2>
           <a id="report-issue-link" class="setting-link" href="#" target="_blank" rel="noopener noreferrer">
             <span>Report an issue</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M7 17L17 7"/>
+              <path d="M8 7h9v9"/>
+            </svg>
+          </a>
+          <a id="rate-link" class="setting-link" href="#" target="_blank" rel="noopener noreferrer">
+            <span>Rate Chouette</span>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M7 17L17 7"/>
               <path d="M8 7h9v9"/>
